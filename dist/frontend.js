@@ -2605,6 +2605,8 @@ var STYLES = `
   transform: translateX(14px);
   background: var(--lumiverse-primary-contrast, #fff);
 }
+.summaryplus-trimming-options { display: flex; flex-direction: column; gap: 10px; }
+.summaryplus-trimming-options[hidden] { display: none; }
 .summaryplus-trimming-action { width: 100%; }
 .summaryplus-regex-ghost {
   opacity: 1 !important;
@@ -3377,7 +3379,13 @@ function setup(ctx) {
     const ownedHiddenMessageCount = new Set(data.state?.entries.flatMap((entry) => entry.autoHiddenSourceIds ?? []) ?? []).size;
     const unhideButton = button("Unhide SummaryPlus messages", () => send({ type: "unhide_summaryplus_messages" }), "is-quiet is-tint-primary", ownedHiddenMessageCount === 0 || data.processing);
     unhideButton.classList.add("summaryplus-trimming-action");
-    trimmingSection.append(trimmingRow, hideDelayChapters.field, unhideButton);
+    const trimmingOptions = element("div", "summaryplus-trimming-options");
+    trimmingOptions.hidden = !hideSummarizedMessages.checked;
+    trimmingOptions.append(hideDelayChapters.field, unhideButton);
+    hideSummarizedMessages.addEventListener("change", () => {
+      trimmingOptions.hidden = !hideSummarizedMessages.checked;
+    });
+    trimmingSection.append(trimmingRow, trimmingOptions);
     const modelSection = element("section", "summaryplus-section");
     modelSection.appendChild(element("h3", "summaryplus-section-title", "Generation"));
     const modelGrid = element("div", "summaryplus-grid");

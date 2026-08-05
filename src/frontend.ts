@@ -352,6 +352,8 @@ const STYLES = `
   transform: translateX(14px);
   background: var(--lumiverse-primary-contrast, #fff);
 }
+.summaryplus-trimming-options { display: flex; flex-direction: column; gap: 10px; }
+.summaryplus-trimming-options[hidden] { display: none; }
 .summaryplus-trimming-action { width: 100%; }
 .summaryplus-regex-ghost {
   opacity: 1 !important;
@@ -1376,7 +1378,13 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       ownedHiddenMessageCount === 0 || data.processing,
     )
     unhideButton.classList.add('summaryplus-trimming-action')
-    trimmingSection.append(trimmingRow, hideDelayChapters.field, unhideButton)
+    const trimmingOptions = element('div', 'summaryplus-trimming-options')
+    trimmingOptions.hidden = !hideSummarizedMessages.checked
+    trimmingOptions.append(hideDelayChapters.field, unhideButton)
+    hideSummarizedMessages.addEventListener('change', () => {
+      trimmingOptions.hidden = !hideSummarizedMessages.checked
+    })
+    trimmingSection.append(trimmingRow, trimmingOptions)
 
     const modelSection = element('section', 'summaryplus-section')
     modelSection.appendChild(element('h3', 'summaryplus-section-title', 'Generation'))
