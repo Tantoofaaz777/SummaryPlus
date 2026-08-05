@@ -13,8 +13,11 @@ export interface SummaryEntry {
   id: string
   level: SummaryLevel
   content: string
+  sequence?: number
   orderStart: number
   orderEnd: number
+  sourceOrderStart?: number
+  sourceOrderEnd?: number
   active: boolean
   sourceIds: string[]
   createdAt: string
@@ -74,6 +77,7 @@ export interface ChatMessageLike {
   id: string | number
   content: string
   role?: 'system' | 'user' | 'assistant'
+  indexInChat?: number
 }
 
 export interface ConnectionOption {
@@ -313,8 +317,17 @@ function normalizeEntry(value: unknown): SummaryEntry | null {
     id: candidate.id,
     level: candidate.level,
     content: candidate.content,
+    sequence: Number.isFinite(candidate.sequence)
+      ? Math.max(1, Math.trunc(Number(candidate.sequence)))
+      : undefined,
     orderStart: Number(candidate.orderStart),
     orderEnd: Number(candidate.orderEnd),
+    sourceOrderStart: Number.isFinite(candidate.sourceOrderStart)
+      ? Math.max(1, Math.trunc(Number(candidate.sourceOrderStart)))
+      : undefined,
+    sourceOrderEnd: Number.isFinite(candidate.sourceOrderEnd)
+      ? Math.max(1, Math.trunc(Number(candidate.sourceOrderEnd)))
+      : undefined,
     active: candidate.active,
     sourceIds: candidate.sourceIds.map(String),
     createdAt: typeof candidate.createdAt === 'string' ? candidate.createdAt : now,
@@ -339,7 +352,7 @@ export function normalizeChatState(value: unknown, historyApproved = false): Cha
     ? { ...candidate.lastError }
     : undefined
 
-  return {
+  const state: ChatState = {
     schemaVersion: 1,
     historyApproved: typeof candidate.historyApproved === 'boolean'
       ? candidate.historyApproved
@@ -354,6 +367,8 @@ export function normalizeChatState(value: unknown, historyApproved = false): Cha
     entries,
     lastError,
   }
+  ensureEntryDisplayMetadata(state)
+  return state
 }
 
 export function parseChatState(raw: unknown): ChatState | null {
@@ -475,6 +490,121 @@ export function selectPromotionBatch(
 
 export function sourceText(items: Array<{ content: string }>): string {
   return items.map((item) => item.content).join('\n\n')
+}
+
+function hasDisplayNumber(value: number | undefined): value is number {
+  return Number.isInteger(value) && Number(value) >= 1
+}
+
+function assignDisplayNumber(
+  entry: SummaryEntry,
+  key: 'sequence' | 'sourceOrderStart' | 'sourceOrderEnd',
+  value: number,
+): boolean {
+  const normalized = Math.max(1, Math.trunc(value))
+  if (entry[key] === normalized) return false
+  entry[key] = normalized
+  return true
+}
+
+export function ensureEntryDisplayMetadata(
+  state: ChatState,
+  messages: ChatMessageLike[] = [],
+): boolean {
+  let changed = false
+
+  for (const entry of state.entries) {
+    if (entry.level === 'chapter' && !hasDisplayNumber(entry.sequence)) {
+      changed = assignDisplayNumber(entry, 'sequence', entry.orderStart) || changed
+    }
+  }
+
+  for (const level of ['arc', 'volume'] as const) {
+    const entries = state.entries
+      .filter((entry) => entry.level === level)
+      .sort((left, right) => (
+        left.orderStart - right.orderStart
+        || left.orderEnd - right.orderEnd
+        || left.createdAt.localeCompare(right.createdAt)
+      ))
+    let nextSequence = 1
+    for (const entry of entries) {
+      if (!hasDisplayNumber(entry.sequence)) {
+        changed = assignDisplayNumber(entry, 'sequence', nextSequence) || changed
+      }
+      nextSequence = Math.max(nextSequence, Number(entry.sequence) + 1)
+    }
+  }
+
+  const messageNumbers = new Map(
+    messages
+      .filter((message) => Number.isInteger(message.indexInChat) && Number(message.indexInChat) >= 0)
+      .map((message) => [String(message.id), Number(message.indexInChat) + 1]),
+  )
+  const entriesById = new Map(state.entries.map((entry) => [entry.id, entry]))
+
+  for (const entry of state.entries) {
+    if (
+      hasDisplayNumber(entry.sourceOrderStart)
+      && hasDisplayNumber(entry.sourceOrderEnd)
+    ) {
+      continue
+    }
+
+    let sourceNumbers: number[] = []
+    if (entry.level === 'chapter') {
+      sourceNumbers = entry.sourceIds
+        .map((sourceId) => messageNumbers.get(sourceId))
+        .filter((value): value is number => value !== undefined)
+    } else {
+      sourceNumbers = entry.sourceIds
+        .map((sourceId) => entriesById.get(sourceId)?.sequence)
+        .filter((value): value is number => hasDisplayNumber(value))
+      if (sourceNumbers.length === 0 && entry.level === 'arc') {
+        sourceNumbers = [entry.orderStart, entry.orderEnd]
+      }
+    }
+
+    if (sourceNumbers.length > 0) {
+      changed = assignDisplayNumber(
+        entry,
+        'sourceOrderStart',
+        Math.min(...sourceNumbers),
+      ) || changed
+      changed = assignDisplayNumber(
+        entry,
+        'sourceOrderEnd',
+        Math.max(...sourceNumbers),
+      ) || changed
+    }
+  }
+
+  return changed
+}
+
+export function nextEntrySequence(state: ChatState, level: 'arc' | 'volume'): number {
+  ensureEntryDisplayMetadata(state)
+  return state.entries
+    .filter((entry) => entry.level === level && hasDisplayNumber(entry.sequence))
+    .reduce((maximum, entry) => Math.max(maximum, Number(entry.sequence)), 0) + 1
+}
+
+export function entryDisplayTitle(entry: SummaryEntry): string {
+  const level = `${entry.level[0].toUpperCase()}${entry.level.slice(1)}`
+  const sequence = entry.sequence ?? (entry.level === 'chapter' ? entry.orderStart : 1)
+  const title = `${level} ${sequence}`
+  if (
+    !hasDisplayNumber(entry.sourceOrderStart)
+    || !hasDisplayNumber(entry.sourceOrderEnd)
+  ) {
+    return title
+  }
+  const sourceLabel = entry.level === 'chapter'
+    ? 'Messages'
+    : entry.level === 'arc'
+      ? 'Chapters'
+      : 'Arcs'
+  return `${title} • ${sourceLabel} ${entry.sourceOrderStart}-${entry.sourceOrderEnd}`
 }
 
 export function orderBySavedIds<T extends { id: string }>(

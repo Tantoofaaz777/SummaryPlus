@@ -165,8 +165,11 @@ function normalizeEntry(value) {
     id: candidate.id,
     level: candidate.level,
     content: candidate.content,
+    sequence: Number.isFinite(candidate.sequence) ? Math.max(1, Math.trunc(Number(candidate.sequence))) : undefined,
     orderStart: Number(candidate.orderStart),
     orderEnd: Number(candidate.orderEnd),
+    sourceOrderStart: Number.isFinite(candidate.sourceOrderStart) ? Math.max(1, Math.trunc(Number(candidate.sourceOrderStart))) : undefined,
+    sourceOrderEnd: Number.isFinite(candidate.sourceOrderEnd) ? Math.max(1, Math.trunc(Number(candidate.sourceOrderEnd))) : undefined,
     active: candidate.active,
     sourceIds: candidate.sourceIds.map(String),
     createdAt: typeof candidate.createdAt === "string" ? candidate.createdAt : now,
@@ -183,7 +186,7 @@ function normalizeChatState(value, historyApproved = false) {
   const entries = Array.isArray(candidate.entries) ? candidate.entries.map(normalizeEntry).filter((entry) => entry !== null) : [];
   const maxOrder = entries.reduce((maximum, entry) => Math.max(maximum, entry.orderEnd), 0);
   const lastError = candidate.lastError && isLevel(candidate.lastError.level) && typeof candidate.lastError.message === "string" && typeof candidate.lastError.at === "string" ? { ...candidate.lastError } : undefined;
-  return {
+  const state = {
     schemaVersion: 1,
     historyApproved: typeof candidate.historyApproved === "boolean" ? candidate.historyApproved : historyApproved,
     nextChapterOrder: Math.max(maxOrder + 1, integerAtLeast(candidate.nextChapterOrder, maxOrder + 1, 1)),
@@ -191,6 +194,8 @@ function normalizeChatState(value, historyApproved = false) {
     entries,
     lastError
   };
+  ensureEntryDisplayMetadata(state);
+  return state;
 }
 function parseChatState(raw) {
   if (typeof raw !== "string" || !raw.trim())
@@ -271,6 +276,59 @@ function sourceText(items) {
   return items.map((item) => item.content).join(`
 
 `);
+}
+function hasDisplayNumber(value) {
+  return Number.isInteger(value) && Number(value) >= 1;
+}
+function assignDisplayNumber(entry, key, value) {
+  const normalized = Math.max(1, Math.trunc(value));
+  if (entry[key] === normalized)
+    return false;
+  entry[key] = normalized;
+  return true;
+}
+function ensureEntryDisplayMetadata(state, messages = []) {
+  let changed = false;
+  for (const entry of state.entries) {
+    if (entry.level === "chapter" && !hasDisplayNumber(entry.sequence)) {
+      changed = assignDisplayNumber(entry, "sequence", entry.orderStart) || changed;
+    }
+  }
+  for (const level of ["arc", "volume"]) {
+    const entries = state.entries.filter((entry) => entry.level === level).sort((left, right) => left.orderStart - right.orderStart || left.orderEnd - right.orderEnd || left.createdAt.localeCompare(right.createdAt));
+    let nextSequence = 1;
+    for (const entry of entries) {
+      if (!hasDisplayNumber(entry.sequence)) {
+        changed = assignDisplayNumber(entry, "sequence", nextSequence) || changed;
+      }
+      nextSequence = Math.max(nextSequence, Number(entry.sequence) + 1);
+    }
+  }
+  const messageNumbers = new Map(messages.filter((message) => Number.isInteger(message.indexInChat) && Number(message.indexInChat) >= 0).map((message) => [String(message.id), Number(message.indexInChat) + 1]));
+  const entriesById = new Map(state.entries.map((entry) => [entry.id, entry]));
+  for (const entry of state.entries) {
+    if (hasDisplayNumber(entry.sourceOrderStart) && hasDisplayNumber(entry.sourceOrderEnd)) {
+      continue;
+    }
+    let sourceNumbers = [];
+    if (entry.level === "chapter") {
+      sourceNumbers = entry.sourceIds.map((sourceId) => messageNumbers.get(sourceId)).filter((value) => value !== undefined);
+    } else {
+      sourceNumbers = entry.sourceIds.map((sourceId) => entriesById.get(sourceId)?.sequence).filter((value) => hasDisplayNumber(value));
+      if (sourceNumbers.length === 0 && entry.level === "arc") {
+        sourceNumbers = [entry.orderStart, entry.orderEnd];
+      }
+    }
+    if (sourceNumbers.length > 0) {
+      changed = assignDisplayNumber(entry, "sourceOrderStart", Math.min(...sourceNumbers)) || changed;
+      changed = assignDisplayNumber(entry, "sourceOrderEnd", Math.max(...sourceNumbers)) || changed;
+    }
+  }
+  return changed;
+}
+function nextEntrySequence(state, level) {
+  ensureEntryDisplayMetadata(state);
+  return state.entries.filter((entry) => entry.level === level && hasDisplayNumber(entry.sequence)).reduce((maximum, entry) => Math.max(maximum, Number(entry.sequence)), 0) + 1;
 }
 function orderBySavedIds(items, savedOrder) {
   const byId = new Map(items.map((item) => [item.id, item]));
@@ -607,7 +665,8 @@ async function getMessages(chatId) {
   return messages.map((message) => ({
     id: String(message.id),
     content: typeof message.content === "string" ? message.content : "",
-    role: message.role
+    role: message.role,
+    indexInChat: message.index_in_chat
   }));
 }
 async function ensureState(chatId, discovery = "view") {
@@ -705,6 +764,7 @@ async function createSnapshot(userId) {
     ensureState(chatId),
     getMessages(chatId)
   ]);
+  ensureEntryDisplayMetadata(state, messages);
   return {
     chatId,
     state,
@@ -887,9 +947,16 @@ async function recordFailure(chatId, level, error, userId) {
 }
 async function createChapter(chatId, state, settings, signal, userId) {
   const messages = await getMessages(chatId);
+  ensureEntryDisplayMetadata(state, messages);
   const batch = selectChapterBatch(messages, state, settings);
   if (!batch)
     return "none";
+  const sourceMessageNumbers = batch.map((message) => message.indexInChat).filter((value) => typeof value === "number" && Number.isInteger(value) && value >= 0).map((value) => value + 1);
+  if (sourceMessageNumbers.length !== batch.length) {
+    throw new Error("Lumiverse did not provide message positions for the Chapter source batch.");
+  }
+  const sourceOrderStart = Math.min(...sourceMessageNumbers);
+  const sourceOrderEnd = Math.max(...sourceMessageNumbers);
   let content;
   try {
     content = await generateSummary(chatId, {
@@ -908,6 +975,7 @@ async function createChapter(chatId, state, settings, signal, userId) {
     ensureState(chatId),
     getMessages(chatId)
   ]);
+  ensureEntryDisplayMetadata(currentState, currentMessages);
   const currentBatch = selectChapterBatch(currentMessages, currentState, settings);
   if (!currentBatch || !isSameMessageBatch(batch, currentMessages) || currentBatch.length !== batch.length || currentBatch.some((message, index) => String(message.id) !== String(batch[index]?.id))) {
     return "stale";
@@ -921,6 +989,11 @@ async function createChapter(chatId, state, settings, signal, userId) {
     ])
   ];
   const restored = restoreDeletedChapterSlot(currentState, sourceIds, content, createdAt);
+  if (restored) {
+    restored.sequence = restored.orderStart;
+    restored.sourceOrderStart = sourceOrderStart;
+    restored.sourceOrderEnd = sourceOrderEnd;
+  }
   if (!restored) {
     const order = currentState.nextChapterOrder;
     currentState.nextChapterOrder += 1;
@@ -928,8 +1001,11 @@ async function createChapter(chatId, state, settings, signal, userId) {
       id: id("chapter"),
       level: "chapter",
       content,
+      sequence: order,
       orderStart: order,
       orderEnd: order,
+      sourceOrderStart,
+      sourceOrderEnd,
       active: true,
       sourceIds,
       createdAt,
@@ -941,6 +1017,7 @@ async function createChapter(chatId, state, settings, signal, userId) {
   return "created";
 }
 async function createPromotion(chatId, targetLevel, state, settings, signal, userId) {
+  ensureEntryDisplayMetadata(state);
   const sourceLevel = targetLevel === "arc" ? "chapter" : "arc";
   const size = targetLevel === "arc" ? settings.chaptersPerArc : settings.arcsPerVolume;
   const delay = targetLevel === "arc" ? settings.chapterDelay : settings.arcDelay;
@@ -949,6 +1026,12 @@ async function createPromotion(chatId, targetLevel, state, settings, signal, use
     return "none";
   const orderStart = Math.min(...batch.map((entry) => entry.orderStart));
   const orderEnd = Math.max(...batch.map((entry) => entry.orderEnd));
+  const sourceSequenceNumbers = batch.map((entry) => entry.sequence).filter((value) => typeof value === "number" && Number.isInteger(value) && value >= 1);
+  if (sourceSequenceNumbers.length !== batch.length) {
+    throw new Error(`SummaryPlus could not determine the ${sourceLevel} sequence range.`);
+  }
+  const sourceOrderStart = Math.min(...sourceSequenceNumbers);
+  const sourceOrderEnd = Math.max(...sourceSequenceNumbers);
   let content;
   try {
     content = await generateSummary(chatId, {
@@ -964,6 +1047,7 @@ async function createPromotion(chatId, targetLevel, state, settings, signal, use
     throw error;
   }
   const currentState = await ensureState(chatId);
+  ensureEntryDisplayMetadata(currentState);
   if (!isSameEntryBatch(batch, currentState))
     return "stale";
   const createdAt = now();
@@ -971,8 +1055,11 @@ async function createPromotion(chatId, targetLevel, state, settings, signal, use
     id: id(targetLevel),
     level: targetLevel,
     content,
+    sequence: nextEntrySequence(currentState, targetLevel),
     orderStart,
     orderEnd,
+    sourceOrderStart,
+    sourceOrderEnd,
     active: true,
     sourceIds: batch.map((entry) => entry.id),
     createdAt,

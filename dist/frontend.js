@@ -2270,6 +2270,19 @@ function createDefaultSettings() {
 function activeEntries(state, level) {
   return state.entries.filter((entry) => entry.active && (!level || entry.level === level)).sort((left, right) => left.orderStart - right.orderStart || left.orderEnd - right.orderEnd || left.createdAt.localeCompare(right.createdAt));
 }
+function hasDisplayNumber(value) {
+  return Number.isInteger(value) && Number(value) >= 1;
+}
+function entryDisplayTitle(entry) {
+  const level = `${entry.level[0].toUpperCase()}${entry.level.slice(1)}`;
+  const sequence = entry.sequence ?? (entry.level === "chapter" ? entry.orderStart : 1);
+  const title = `${level} ${sequence}`;
+  if (!hasDisplayNumber(entry.sourceOrderStart) || !hasDisplayNumber(entry.sourceOrderEnd)) {
+    return title;
+  }
+  const sourceLabel = entry.level === "chapter" ? "Messages" : entry.level === "arc" ? "Chapters" : "Arcs";
+  return `${title} • ${sourceLabel} ${entry.sourceOrderStart}-${entry.sourceOrderEnd}`;
+}
 
 // src/frontend.ts
 var LEVEL_LABEL = {
@@ -2683,11 +2696,6 @@ function button(label, onClick, className = "", disabled = false) {
 function isBackendMessage(payload) {
   return Boolean(payload && typeof payload === "object" && typeof payload.type === "string");
 }
-function entryTitle(entry) {
-  if (entry.level === "chapter")
-    return `Chapter ${entry.orderStart}`;
-  return `${LEVEL_LABEL[entry.level]} · Chapters ${entry.orderStart}-${entry.orderEnd}`;
-}
 function generationSignature(progress) {
   if (!progress)
     return "preparing";
@@ -2718,14 +2726,14 @@ function generationRetryText(progress) {
 }
 function deleteEntryMessage(entry) {
   if (entry.level === "chapter") {
-    return `Delete ${entryTitle(entry)}? Its summary text will be permanently deleted and its source messages will become eligible for Chapter processing again.`;
+    return `Delete ${entryDisplayTitle(entry)}? Its summary text will be permanently deleted and its source messages will become eligible for Chapter processing again.`;
   }
   const sourceLevel = entry.level === "arc" ? "Chapter" : "Arc";
   const sourceLabel = `${sourceLevel}${entry.sourceIds.length === 1 ? "" : "s"}`;
-  return `Delete ${entryTitle(entry)}? Its summary text will be permanently deleted and its ${entry.sourceIds.length} source ${sourceLabel} will be restored.`;
+  return `Delete ${entryDisplayTitle(entry)}? Its summary text will be permanently deleted and its ${entry.sourceIds.length} source ${sourceLabel} will be restored.`;
 }
 function regenerateEntryMessage(entry) {
-  return `Regenerate ${entryTitle(entry)} from its original sources using the current prompt and generation settings? The existing summary will be replaced only if generation succeeds.`;
+  return `Regenerate ${entryDisplayTitle(entry)} from its original sources using the current prompt and generation settings? The existing summary will be replaced only if generation succeeds.`;
 }
 function numberField(labelText, value, options = {}) {
   const field = element("label", "summaryplus-field");
@@ -3073,7 +3081,7 @@ function setup(ctx) {
     } else {
       const stack = element("div", "summaryplus-stack");
       for (const entry of entries) {
-        const title = entryTitle(entry);
+        const title = entryDisplayTitle(entry);
         const draft = entryDrafts.get(entry.id);
         const hasPendingChange = draft !== undefined && draft !== entry.content;
         const controlsDisabled = data.processing || editingEntryId !== null || regeneratingEntryId !== null || deletingEntryId !== null;

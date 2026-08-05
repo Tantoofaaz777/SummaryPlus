@@ -16,12 +16,14 @@ import {
   createChatState,
   deleteActiveEntry,
   entryCounts,
+  ensureEntryDisplayMetadata,
   isSameEntryBatch,
   isSameMessageBatch,
   hasValidContextPlaceholders,
   latestActiveEntry,
   macroValue,
   mergeVisibleOrder,
+  nextEntrySequence,
   normalizeSettings,
   orderBySavedIds,
   orderedSourceItems,
@@ -153,6 +155,7 @@ async function getMessages(chatId: string): Promise<ChatMessageLike[]> {
     id: String(message.id),
     content: typeof message.content === 'string' ? message.content : '',
     role: message.role,
+    indexInChat: message.index_in_chat,
   }))
 }
 
@@ -277,6 +280,7 @@ async function createSnapshot(userId?: string): Promise<Snapshot> {
     ensureState(chatId),
     getMessages(chatId),
   ])
+  ensureEntryDisplayMetadata(state, messages)
   return {
     chatId,
     state,
@@ -513,8 +517,20 @@ async function createChapter(
   userId?: string,
 ): Promise<'created' | 'stale' | 'none'> {
   const messages = await getMessages(chatId)
+  ensureEntryDisplayMetadata(state, messages)
   const batch = selectChapterBatch(messages, state, settings)
   if (!batch) return 'none'
+  const sourceMessageNumbers = batch
+    .map((message) => message.indexInChat)
+    .filter((value): value is number => (
+      typeof value === 'number' && Number.isInteger(value) && value >= 0
+    ))
+    .map((value) => value + 1)
+  if (sourceMessageNumbers.length !== batch.length) {
+    throw new Error('Lumiverse did not provide message positions for the Chapter source batch.')
+  }
+  const sourceOrderStart = Math.min(...sourceMessageNumbers)
+  const sourceOrderEnd = Math.max(...sourceMessageNumbers)
 
   let content: string
   try {
@@ -542,6 +558,7 @@ async function createChapter(
     ensureState(chatId),
     getMessages(chatId),
   ])
+  ensureEntryDisplayMetadata(currentState, currentMessages)
   const currentBatch = selectChapterBatch(currentMessages, currentState, settings)
   if (
     !currentBatch
@@ -566,6 +583,11 @@ async function createChapter(
     content,
     createdAt,
   )
+  if (restored) {
+    restored.sequence = restored.orderStart
+    restored.sourceOrderStart = sourceOrderStart
+    restored.sourceOrderEnd = sourceOrderEnd
+  }
   if (!restored) {
     const order = currentState.nextChapterOrder
     currentState.nextChapterOrder += 1
@@ -573,8 +595,11 @@ async function createChapter(
       id: id('chapter'),
       level: 'chapter',
       content,
+      sequence: order,
       orderStart: order,
       orderEnd: order,
+      sourceOrderStart,
+      sourceOrderEnd,
       active: true,
       sourceIds,
       createdAt,
@@ -594,6 +619,7 @@ async function createPromotion(
   signal: AbortSignal,
   userId?: string,
 ): Promise<'created' | 'stale' | 'none'> {
+  ensureEntryDisplayMetadata(state)
   const sourceLevel = targetLevel === 'arc' ? 'chapter' : 'arc'
   const size = targetLevel === 'arc' ? settings.chaptersPerArc : settings.arcsPerVolume
   const delay = targetLevel === 'arc' ? settings.chapterDelay : settings.arcDelay
@@ -601,6 +627,16 @@ async function createPromotion(
   if (!batch) return 'none'
   const orderStart = Math.min(...batch.map((entry) => entry.orderStart))
   const orderEnd = Math.max(...batch.map((entry) => entry.orderEnd))
+  const sourceSequenceNumbers = batch
+    .map((entry) => entry.sequence)
+    .filter((value): value is number => (
+      typeof value === 'number' && Number.isInteger(value) && value >= 1
+    ))
+  if (sourceSequenceNumbers.length !== batch.length) {
+    throw new Error(`SummaryPlus could not determine the ${sourceLevel} sequence range.`)
+  }
+  const sourceOrderStart = Math.min(...sourceSequenceNumbers)
+  const sourceOrderEnd = Math.max(...sourceSequenceNumbers)
 
   let content: string
   try {
@@ -625,6 +661,7 @@ async function createPromotion(
   }
 
   const currentState = await ensureState(chatId)
+  ensureEntryDisplayMetadata(currentState)
   if (!isSameEntryBatch(batch, currentState)) return 'stale'
 
   const createdAt = now()
@@ -632,8 +669,11 @@ async function createPromotion(
     id: id(targetLevel),
     level: targetLevel,
     content,
+    sequence: nextEntrySequence(currentState, targetLevel),
     orderStart,
     orderEnd,
+    sourceOrderStart,
+    sourceOrderEnd,
     active: true,
     sourceIds: batch.map((entry) => entry.id),
     createdAt,

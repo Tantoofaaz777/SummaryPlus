@@ -4,6 +4,7 @@ import {
   LEVELS,
   activeEntries,
   createDefaultSettings,
+  entryDisplayTitle,
   type GenerationProgress,
   type PromptDefinition,
   type Snapshot,
@@ -459,11 +460,6 @@ function isBackendMessage(payload: unknown): payload is BackendMessage {
   )
 }
 
-function entryTitle(entry: SummaryEntry): string {
-  if (entry.level === 'chapter') return `Chapter ${entry.orderStart}`
-  return `${LEVEL_LABEL[entry.level]} · Chapters ${entry.orderStart}-${entry.orderEnd}`
-}
-
 function generationSignature(progress: GenerationProgress | null): string {
   if (!progress) return 'preparing'
   return [
@@ -499,15 +495,15 @@ function generationRetryText(progress: GenerationProgress | null): string {
 
 function deleteEntryMessage(entry: SummaryEntry): string {
   if (entry.level === 'chapter') {
-    return `Delete ${entryTitle(entry)}? Its summary text will be permanently deleted and its source messages will become eligible for Chapter processing again.`
+    return `Delete ${entryDisplayTitle(entry)}? Its summary text will be permanently deleted and its source messages will become eligible for Chapter processing again.`
   }
   const sourceLevel = entry.level === 'arc' ? 'Chapter' : 'Arc'
   const sourceLabel = `${sourceLevel}${entry.sourceIds.length === 1 ? '' : 's'}`
-  return `Delete ${entryTitle(entry)}? Its summary text will be permanently deleted and its ${entry.sourceIds.length} source ${sourceLabel} will be restored.`
+  return `Delete ${entryDisplayTitle(entry)}? Its summary text will be permanently deleted and its ${entry.sourceIds.length} source ${sourceLabel} will be restored.`
 }
 
 function regenerateEntryMessage(entry: SummaryEntry): string {
-  return `Regenerate ${entryTitle(entry)} from its original sources using the current prompt and generation settings? The existing summary will be replaced only if generation succeeds.`
+  return `Regenerate ${entryDisplayTitle(entry)} from its original sources using the current prompt and generation settings? The existing summary will be replaced only if generation succeeds.`
 }
 
 function numberField(
@@ -963,7 +959,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     } else {
       const stack = element('div', 'summaryplus-stack')
       for (const entry of entries) {
-        const title = entryTitle(entry)
+        const title = entryDisplayTitle(entry)
         const draft = entryDrafts.get(entry.id)
         const hasPendingChange = draft !== undefined && draft !== entry.content
         const controlsDisabled = data.processing

@@ -5,10 +5,13 @@ import {
   createChatState,
   createDefaultSettings,
   deleteActiveEntry,
+  ensureEntryDisplayMetadata,
+  entryDisplayTitle,
   estimatedStreamTokens,
   hasValidContextPlaceholders,
   macroValue,
   mergeVisibleOrder,
+  nextEntrySequence,
   normalizeSettings,
   orderBySavedIds,
   orderedSourceItems,
@@ -159,6 +162,84 @@ describe('promotion and macros', () => {
     const state = createChatState(true)
     state.entries = [entry('First', 'chapter', 1), entry('Second', 'chapter', 2)]
     expect(macroValue(state, 'chapter')).toBe('First\n\nSecond')
+  })
+})
+
+describe('summary display metadata', () => {
+  test('uses the first and last persisted message positions across deleted-message gaps', () => {
+    const state = createChatState(true)
+    state.entries = [{
+      ...entry('c1', 'chapter', 1),
+      sourceIds: ['m1', 'm4', 'm6', 'm9', 'm10', 'm11', 'm12'],
+    }]
+    const messages = [
+      { id: 'm1', content: 'one', indexInChat: 0 },
+      { id: 'm4', content: 'four', indexInChat: 3 },
+      { id: 'm6', content: 'six', indexInChat: 5 },
+      { id: 'm9', content: 'nine', indexInChat: 8 },
+      { id: 'm10', content: 'ten', indexInChat: 9 },
+      { id: 'm11', content: 'eleven', indexInChat: 10 },
+      { id: 'm12', content: 'twelve', indexInChat: 11 },
+    ]
+
+    expect(ensureEntryDisplayMetadata(state, messages)).toBe(true)
+    expect(state.entries[0]).toMatchObject({
+      sequence: 1,
+      sourceOrderStart: 1,
+      sourceOrderEnd: 12,
+    })
+    expect(entryDisplayTitle(state.entries[0])).toBe('Chapter 1 • Messages 1-12')
+
+    ensureEntryDisplayMetadata(state, messages.slice(1))
+    expect(state.entries[0]).toMatchObject({
+      sourceOrderStart: 1,
+      sourceOrderEnd: 12,
+    })
+  })
+
+  test('backfills Arc and Volume numbers and their direct source ranges', () => {
+    const state = createChatState(true)
+    const chapters = Array.from({ length: 16 }, (_, index) => ({
+      ...entry(`c${index + 1}`, 'chapter', index + 1),
+      active: false,
+    }))
+    const arc1 = {
+      ...entry('a1', 'arc', 1, 8),
+      active: false,
+      sourceIds: chapters.slice(0, 8).map((chapter) => chapter.id),
+    }
+    const arc2 = {
+      ...entry('a2', 'arc', 9, 16),
+      active: false,
+      sourceIds: chapters.slice(8).map((chapter) => chapter.id),
+    }
+    const volume = {
+      ...entry('v1', 'volume', 1, 16),
+      sourceIds: ['a1', 'a2'],
+    }
+    state.entries = [...chapters, arc2, arc1, volume]
+
+    ensureEntryDisplayMetadata(state)
+
+    expect(arc1).toMatchObject({
+      sequence: 1,
+      sourceOrderStart: 1,
+      sourceOrderEnd: 8,
+    })
+    expect(arc2).toMatchObject({
+      sequence: 2,
+      sourceOrderStart: 9,
+      sourceOrderEnd: 16,
+    })
+    expect(volume).toMatchObject({
+      sequence: 1,
+      sourceOrderStart: 1,
+      sourceOrderEnd: 2,
+    })
+    expect(entryDisplayTitle(arc1)).toBe('Arc 1 • Chapters 1-8')
+    expect(entryDisplayTitle(volume)).toBe('Volume 1 • Arcs 1-2')
+    expect(nextEntrySequence(state, 'arc')).toBe(3)
+    expect(nextEntrySequence(state, 'volume')).toBe(2)
   })
 })
 
