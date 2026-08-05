@@ -132,7 +132,6 @@ const STYLES = `
 .summaryplus-button:hover:not(:disabled) { background: color-mix(in srgb, var(--sp-accent) 12%, var(--sp-surface)); }
 .summaryplus-button:active:not(:disabled) { transform: translateY(1px); }
 .summaryplus-button:disabled { cursor: not-allowed; opacity: .48; }
-.summaryplus-button.is-primary { color: #fff; border-color: transparent; background: var(--sp-accent); }
 .summaryplus-button.is-danger { color: #ef8585; }
 .summaryplus-button.is-quiet { min-height: 30px; padding: 5px 8px; background: transparent; }
 .summaryplus-button.is-tint-primary {
@@ -482,14 +481,16 @@ export function setup(ctx: SpindleFrontendContext): () => void {
           'Automation is paused until you approve catch-up. The complete eligible history will be processed in chronological batches.',
         ),
       )
+      const historyActions = element('div', 'summaryplus-actions')
+      historyActions.appendChild(button(
+        'Process history & enable',
+        () => send({ type: 'process_history' }),
+        'is-quiet is-tint-primary',
+        data.processing,
+      ))
       content.append(
         warning,
-        button(
-          'Process history & enable',
-          () => send({ type: 'process_history' }),
-          'is-primary',
-          data.processing,
-        ),
+        historyActions,
       )
       return content
     }
