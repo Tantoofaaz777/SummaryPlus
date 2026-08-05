@@ -1,6 +1,5 @@
 import type { SpindleFrontendContext } from 'lumiverse-spindle-types'
 import {
-  INPUT_PLACEHOLDER,
   LEVELS,
   activeEntries,
   createDefaultSettings,
@@ -207,7 +206,6 @@ const STYLES = `
 .summaryplus-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .summaryplus-field.is-wide { grid-column: 1 / -1; }
 .summaryplus-label { font-size: 11px; font-weight: 650; }
-.summaryplus-field small { color: var(--sp-muted); font-size: 10px; line-height: 1.4; }
 .summaryplus-switch { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .summaryplus-switch input { width: 17px; height: 17px; accent-color: var(--sp-accent); }
 .summaryplus-prompt-head { display: flex; align-items: center; gap: 7px; }
@@ -264,7 +262,6 @@ function entryTitle(entry: SummaryEntry): string {
 function numberField(
   labelText: string,
   value: number,
-  description: string,
   options: { min?: number; step?: number; defaultValue?: number } = {},
 ): { field: HTMLLabelElement; input: HTMLInputElement } {
   const field = element('label', 'summaryplus-field')
@@ -277,7 +274,7 @@ function numberField(
   if (options.defaultValue !== undefined) input.placeholder = String(options.defaultValue)
   if (options.min !== undefined) input.min = String(options.min)
   if (options.step !== undefined) input.step = String(options.step)
-  field.append(input, element('small', '', description))
+  field.appendChild(input)
   return { field, input }
 }
 
@@ -348,7 +345,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     const nav = element('nav', 'summaryplus-nav')
     const tabs: Array<{ id: Screen; label: string }> = [
       { id: 'summary', label: 'Summary' },
-      { id: 'prompts', label: 'Prompts' },
+      { id: 'prompts', label: 'Prompt Library' },
       { id: 'settings', label: 'Settings' },
     ]
     nav.setAttribute('role', 'tablist')
@@ -392,7 +389,6 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     intro.append(
       element('div', 'summaryplus-eyebrow', 'Story memory'),
       element('h2', 'summaryplus-title', 'Active summary'),
-      element('div', 'summaryplus-copy', 'Oldest to newest, ready for your prompt macros.'),
     )
     hero.appendChild(intro)
     content.appendChild(hero)
@@ -577,25 +573,12 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     const intro = element('div')
     intro.append(
       element('div', 'summaryplus-eyebrow', 'Generation instructions'),
-      element('h2', 'summaryplus-title', 'Prompts'),
-      element(
-        'div',
-        'summaryplus-copy',
-        'Manage independent instructions for Chapter, Arc, and Volume generation.',
-      ),
+      element('h2', 'summaryplus-title', 'Prompt Library'),
     )
     content.appendChild(intro)
 
     const settings = data.settings
     const promptSection = element('section', 'summaryplus-section')
-    promptSection.append(
-      element('h3', 'summaryplus-section-title', 'Prompt library'),
-      element(
-        'div',
-        'summaryplus-help',
-        `Each level has its own System and User prompt. ${INPUT_PLACEHOLDER} is private to generation and receives chat messages, Chapters, or Arcs according to the level.`,
-      ),
-    )
 
     const levelToolbar = element('div', 'summaryplus-toolbar')
     for (const level of LEVELS) {
@@ -666,13 +649,8 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       promptSection.appendChild(promptHead)
 
       if (selected.builtIn) {
-        promptSection.append(
-          element('span', 'summaryplus-builtin', 'Protected default'),
-          element(
-            'div',
-            'summaryplus-help',
-            'Default prompts are read-only. Duplicate this prompt to create an editable copy.',
-          ),
+        promptSection.appendChild(
+          element('span', 'summaryplus-builtin', 'Protected default. Duplicate to edit'),
         )
       }
 
@@ -755,11 +733,6 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     intro.append(
       element('div', 'summaryplus-eyebrow', 'Configuration'),
       element('h2', 'summaryplus-title', 'Summary engine'),
-      element(
-        'div',
-        'summaryplus-copy',
-        'Changes are applied automatically and affect only source items that have not been summarized yet.',
-      ),
     )
     content.appendChild(intro)
 
@@ -770,7 +743,6 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     const automationText = element('div')
     automationText.append(
       element('div', 'summaryplus-label', 'Automatic processing'),
-      element('div', 'summaryplus-help', 'Run eligible batches when a new persisted chat message arrives.'),
     )
     const automation = element('input')
     automation.type = 'checkbox'
@@ -784,37 +756,31 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     const messagesPerChapter = numberField(
       'Messages per Chapter',
       settings.messagesPerChapter,
-      'Oldest consecutive pending messages consumed per Chapter.',
       { min: 1, step: 1, defaultValue: defaults.messagesPerChapter },
     )
     const messageDelay = numberField(
       'Message delay',
       settings.messageDelay,
-      'Recent messages kept completely outside the next Chapter.',
       { min: 0, step: 1, defaultValue: defaults.messageDelay },
     )
     const chaptersPerArc = numberField(
       'Chapters per Arc',
       settings.chaptersPerArc,
-      'Oldest active Chapters consumed per Arc.',
       { min: 1, step: 1, defaultValue: defaults.chaptersPerArc },
     )
     const chapterDelay = numberField(
       'Chapter delay',
       settings.chapterDelay,
-      'Recent Chapters kept outside the next Arc.',
       { min: 0, step: 1, defaultValue: defaults.chapterDelay },
     )
     const arcsPerVolume = numberField(
       'Arcs per Volume',
       settings.arcsPerVolume,
-      'Oldest active Arcs consumed per Volume.',
       { min: 1, step: 1, defaultValue: defaults.arcsPerVolume },
     )
     const arcDelay = numberField(
       'Arc delay',
       settings.arcDelay,
-      'Recent Arcs kept outside the next Volume.',
       { min: 0, step: 1, defaultValue: defaults.arcDelay },
     )
     batchingGrid.append(
@@ -850,33 +816,26 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       connection.appendChild(unavailable)
     }
     connection.value = settings.connectionId ?? ''
-    connectionField.append(
-      connection,
-      element('small', '', 'One connection is shared by Chapter, Arc, and Volume generation.'),
-    )
+    connectionField.appendChild(connection)
     const temperature = numberField(
       'Temperature',
       settings.temperature,
-      'Lower values favor consistency.',
       { min: 0, step: 0.1, defaultValue: defaults.temperature },
     )
     const topP = numberField(
       'Top P',
       settings.topP,
-      'Nucleus sampling probability.',
       { min: 0, step: 0.05, defaultValue: defaults.topP },
     )
     topP.input.max = '1'
     const maxTokens = numberField(
       'Maximum response tokens',
       settings.maxTokens,
-      'Upper response limit for every summary level.',
       { min: 1, step: 1, defaultValue: defaults.maxTokens },
     )
     const retries = numberField(
       'Retries',
       settings.retries,
-      'Additional attempts after the first call. No extension-defined maximum.',
       { min: 0, step: 1, defaultValue: defaults.retries },
     )
     modelGrid.append(

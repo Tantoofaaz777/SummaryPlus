@@ -1,5 +1,4 @@
 // src/core.ts
-var INPUT_PLACEHOLDER = "{{summaryPlusInput}}";
 var LEVELS = ["chapter", "arc", "volume"];
 var BUILTIN_PROMPTS = {
   chapter: {
@@ -252,7 +251,6 @@ var STYLES = `
 .summaryplus-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .summaryplus-field.is-wide { grid-column: 1 / -1; }
 .summaryplus-label { font-size: 11px; font-weight: 650; }
-.summaryplus-field small { color: var(--sp-muted); font-size: 10px; line-height: 1.4; }
 .summaryplus-switch { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .summaryplus-switch input { width: 17px; height: 17px; accent-color: var(--sp-accent); }
 .summaryplus-prompt-head { display: flex; align-items: center; gap: 7px; }
@@ -291,7 +289,7 @@ function entryTitle(entry) {
     return `Chapter ${entry.orderStart}`;
   return `${LEVEL_LABEL[entry.level]} · Chapters ${entry.orderStart}-${entry.orderEnd}`;
 }
-function numberField(labelText, value, description, options = {}) {
+function numberField(labelText, value, options = {}) {
   const field = element("label", "summaryplus-field");
   field.appendChild(element("span", "summaryplus-label", labelText));
   const input = element("input", "summaryplus-input");
@@ -303,7 +301,7 @@ function numberField(labelText, value, description, options = {}) {
     input.min = String(options.min);
   if (options.step !== undefined)
     input.step = String(options.step);
-  field.append(input, element("small", "", description));
+  field.appendChild(input);
   return { field, input };
 }
 function setup(ctx) {
@@ -369,7 +367,7 @@ function setup(ctx) {
     const nav = element("nav", "summaryplus-nav");
     const tabs = [
       { id: "summary", label: "Summary" },
-      { id: "prompts", label: "Prompts" },
+      { id: "prompts", label: "Prompt Library" },
       { id: "settings", label: "Settings" }
     ];
     nav.setAttribute("role", "tablist");
@@ -410,7 +408,7 @@ function setup(ctx) {
     content.setAttribute("aria-labelledby", "summaryplus-tab-summary");
     const hero = element("div", "summaryplus-hero");
     const intro = element("div");
-    intro.append(element("div", "summaryplus-eyebrow", "Story memory"), element("h2", "summaryplus-title", "Active summary"), element("div", "summaryplus-copy", "Oldest to newest, ready for your prompt macros."));
+    intro.append(element("div", "summaryplus-eyebrow", "Story memory"), element("h2", "summaryplus-title", "Active summary"));
     hero.appendChild(intro);
     content.appendChild(hero);
     if (!data.chatId || !data.state) {
@@ -523,11 +521,10 @@ function setup(ctx) {
     content.setAttribute("role", "tabpanel");
     content.setAttribute("aria-labelledby", "summaryplus-tab-prompts");
     const intro = element("div");
-    intro.append(element("div", "summaryplus-eyebrow", "Generation instructions"), element("h2", "summaryplus-title", "Prompts"), element("div", "summaryplus-copy", "Manage independent instructions for Chapter, Arc, and Volume generation."));
+    intro.append(element("div", "summaryplus-eyebrow", "Generation instructions"), element("h2", "summaryplus-title", "Prompt Library"));
     content.appendChild(intro);
     const settings = data.settings;
     const promptSection = element("section", "summaryplus-section");
-    promptSection.append(element("h3", "summaryplus-section-title", "Prompt library"), element("div", "summaryplus-help", `Each level has its own System and User prompt. ${INPUT_PLACEHOLDER} is private to generation and receives chat messages, Chapters, or Arcs according to the level.`));
     const levelToolbar = element("div", "summaryplus-toolbar");
     for (const level of LEVELS) {
       const levelButton = element("button", `summaryplus-pill ${promptLevel === level ? "is-active" : ""}`, LEVEL_LABEL[level]);
@@ -575,7 +572,7 @@ function setup(ctx) {
       }
       promptSection.appendChild(promptHead);
       if (selected.builtIn) {
-        promptSection.append(element("span", "summaryplus-builtin", "Protected default"), element("div", "summaryplus-help", "Default prompts are read-only. Duplicate this prompt to create an editable copy."));
+        promptSection.appendChild(element("span", "summaryplus-builtin", "Protected default. Duplicate to edit"));
       }
       const draft = promptDrafts.get(selected.id) ?? {
         name: selected.name,
@@ -643,14 +640,14 @@ function setup(ctx) {
     content.setAttribute("role", "tabpanel");
     content.setAttribute("aria-labelledby", "summaryplus-tab-settings");
     const intro = element("div");
-    intro.append(element("div", "summaryplus-eyebrow", "Configuration"), element("h2", "summaryplus-title", "Summary engine"), element("div", "summaryplus-copy", "Changes are applied automatically and affect only source items that have not been summarized yet."));
+    intro.append(element("div", "summaryplus-eyebrow", "Configuration"), element("h2", "summaryplus-title", "Summary engine"));
     content.appendChild(intro);
     const settings = data.settings;
     const defaults = createDefaultSettings();
     const automationSection = element("section", "summaryplus-section");
     const automationRow = element("label", "summaryplus-switch");
     const automationText = element("div");
-    automationText.append(element("div", "summaryplus-label", "Automatic processing"), element("div", "summaryplus-help", "Run eligible batches when a new persisted chat message arrives."));
+    automationText.append(element("div", "summaryplus-label", "Automatic processing"));
     const automation = element("input");
     automation.type = "checkbox";
     automation.checked = settings.automationEnabled;
@@ -659,12 +656,12 @@ function setup(ctx) {
     const batchingSection = element("section", "summaryplus-section");
     batchingSection.appendChild(element("h3", "summaryplus-section-title", "Promotion"));
     const batchingGrid = element("div", "summaryplus-grid");
-    const messagesPerChapter = numberField("Messages per Chapter", settings.messagesPerChapter, "Oldest consecutive pending messages consumed per Chapter.", { min: 1, step: 1, defaultValue: defaults.messagesPerChapter });
-    const messageDelay = numberField("Message delay", settings.messageDelay, "Recent messages kept completely outside the next Chapter.", { min: 0, step: 1, defaultValue: defaults.messageDelay });
-    const chaptersPerArc = numberField("Chapters per Arc", settings.chaptersPerArc, "Oldest active Chapters consumed per Arc.", { min: 1, step: 1, defaultValue: defaults.chaptersPerArc });
-    const chapterDelay = numberField("Chapter delay", settings.chapterDelay, "Recent Chapters kept outside the next Arc.", { min: 0, step: 1, defaultValue: defaults.chapterDelay });
-    const arcsPerVolume = numberField("Arcs per Volume", settings.arcsPerVolume, "Oldest active Arcs consumed per Volume.", { min: 1, step: 1, defaultValue: defaults.arcsPerVolume });
-    const arcDelay = numberField("Arc delay", settings.arcDelay, "Recent Arcs kept outside the next Volume.", { min: 0, step: 1, defaultValue: defaults.arcDelay });
+    const messagesPerChapter = numberField("Messages per Chapter", settings.messagesPerChapter, { min: 1, step: 1, defaultValue: defaults.messagesPerChapter });
+    const messageDelay = numberField("Message delay", settings.messageDelay, { min: 0, step: 1, defaultValue: defaults.messageDelay });
+    const chaptersPerArc = numberField("Chapters per Arc", settings.chaptersPerArc, { min: 1, step: 1, defaultValue: defaults.chaptersPerArc });
+    const chapterDelay = numberField("Chapter delay", settings.chapterDelay, { min: 0, step: 1, defaultValue: defaults.chapterDelay });
+    const arcsPerVolume = numberField("Arcs per Volume", settings.arcsPerVolume, { min: 1, step: 1, defaultValue: defaults.arcsPerVolume });
+    const arcDelay = numberField("Arc delay", settings.arcDelay, { min: 0, step: 1, defaultValue: defaults.arcDelay });
     batchingGrid.append(messagesPerChapter.field, messageDelay.field, chaptersPerArc.field, chapterDelay.field, arcsPerVolume.field, arcDelay.field);
     batchingSection.appendChild(batchingGrid);
     const modelSection = element("section", "summaryplus-section");
@@ -691,12 +688,12 @@ function setup(ctx) {
       connection.appendChild(unavailable);
     }
     connection.value = settings.connectionId ?? "";
-    connectionField.append(connection, element("small", "", "One connection is shared by Chapter, Arc, and Volume generation."));
-    const temperature = numberField("Temperature", settings.temperature, "Lower values favor consistency.", { min: 0, step: 0.1, defaultValue: defaults.temperature });
-    const topP = numberField("Top P", settings.topP, "Nucleus sampling probability.", { min: 0, step: 0.05, defaultValue: defaults.topP });
+    connectionField.appendChild(connection);
+    const temperature = numberField("Temperature", settings.temperature, { min: 0, step: 0.1, defaultValue: defaults.temperature });
+    const topP = numberField("Top P", settings.topP, { min: 0, step: 0.05, defaultValue: defaults.topP });
     topP.input.max = "1";
-    const maxTokens = numberField("Maximum response tokens", settings.maxTokens, "Upper response limit for every summary level.", { min: 1, step: 1, defaultValue: defaults.maxTokens });
-    const retries = numberField("Retries", settings.retries, "Additional attempts after the first call. No extension-defined maximum.", { min: 0, step: 1, defaultValue: defaults.retries });
+    const maxTokens = numberField("Maximum response tokens", settings.maxTokens, { min: 1, step: 1, defaultValue: defaults.maxTokens });
+    const retries = numberField("Retries", settings.retries, { min: 0, step: 1, defaultValue: defaults.retries });
     modelGrid.append(connectionField, temperature.field, topP.field, maxTokens.field, retries.field);
     modelSection.appendChild(modelGrid);
     const readNumber = (input, fallback) => Number.isFinite(input.valueAsNumber) ? input.valueAsNumber : fallback;
