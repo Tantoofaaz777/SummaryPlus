@@ -1299,6 +1299,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     const settings = data.settings
     const defaults = createDefaultSettings()
     const automationSection = element('section', 'summaryplus-section')
+    automationSection.appendChild(element('h3', 'summaryplus-section-title', 'Automation'))
     const automationRow = element('div', 'summaryplus-switch')
     const automationText = element('div')
     automationText.append(
@@ -1361,8 +1362,6 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     )
     batchingSection.appendChild(batchingGrid)
 
-    const trimmingSection = element('section', 'summaryplus-section')
-    trimmingSection.appendChild(element('h3', 'summaryplus-section-title', 'Trimming'))
     const trimmingRow = element('div', 'summaryplus-switch')
     trimmingRow.appendChild(element('div', 'summaryplus-label', 'Hide summarized messages'))
     const trimmingToggle = element(
@@ -1398,7 +1397,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     hideSummarizedMessages.addEventListener('change', () => {
       trimmingOptions.hidden = !hideSummarizedMessages.checked
     })
-    trimmingSection.append(trimmingRow, trimmingOptions)
+    automationSection.append(trimmingRow, trimmingOptions)
 
     const modelSection = element('section', 'summaryplus-section')
     modelSection.appendChild(element('h3', 'summaryplus-section-title', 'Generation'))
@@ -1554,7 +1553,6 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       automationSection,
       modelSection,
       batchingSection,
-      trimmingSection,
       regexSection,
     )
     return content

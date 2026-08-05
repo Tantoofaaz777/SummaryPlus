@@ -3349,6 +3349,7 @@ function setup(ctx) {
     const settings = data.settings;
     const defaults2 = createDefaultSettings();
     const automationSection = element("section", "summaryplus-section");
+    automationSection.appendChild(element("h3", "summaryplus-section-title", "Automation"));
     const automationRow = element("div", "summaryplus-switch");
     const automationText = element("div");
     automationText.append(element("div", "summaryplus-label", "Automatic processing"));
@@ -3373,8 +3374,6 @@ function setup(ctx) {
     const arcDelay = numberField("Arc delay", settings.arcDelay, { min: 0, step: 1, defaultValue: defaults2.arcDelay });
     batchingGrid.append(messagesPerChapter.field, messageDelay.field, chaptersPerArc.field, chapterDelay.field, arcsPerVolume.field, arcDelay.field);
     batchingSection.appendChild(batchingGrid);
-    const trimmingSection = element("section", "summaryplus-section");
-    trimmingSection.appendChild(element("h3", "summaryplus-section-title", "Trimming"));
     const trimmingRow = element("div", "summaryplus-switch");
     trimmingRow.appendChild(element("div", "summaryplus-label", "Hide summarized messages"));
     const trimmingToggle = element("label", "summaryplus-regex-toggle summaryplus-settings-toggle");
@@ -3396,7 +3395,7 @@ function setup(ctx) {
     hideSummarizedMessages.addEventListener("change", () => {
       trimmingOptions.hidden = !hideSummarizedMessages.checked;
     });
-    trimmingSection.append(trimmingRow, trimmingOptions);
+    automationSection.append(trimmingRow, trimmingOptions);
     const modelSection = element("section", "summaryplus-section");
     modelSection.appendChild(element("h3", "summaryplus-section-title", "Generation"));
     const modelGrid = element("div", "summaryplus-grid");
@@ -3513,7 +3512,7 @@ function setup(ctx) {
     for (const control of settingsControls) {
       control.addEventListener("change", applySettings);
     }
-    content.append(automationSection, modelSection, batchingSection, trimmingSection, regexSection);
+    content.append(automationSection, modelSection, batchingSection, regexSection);
     return content;
   };
   function render() {
