@@ -4,21 +4,25 @@ import type {
   SpindleAPI,
 } from 'lumiverse-spindle-types'
 import {
+  CONTEXT_PLACEHOLDER_EXAMPLE,
   INPUT_PLACEHOLDER,
   LEVELS,
   SETTINGS_PATH,
   STATE_KEY,
   allPrompts,
+  contextEntriesBefore,
   createChatState,
   deleteActiveEntry,
   entryCounts,
   isSameEntryBatch,
   isSameMessageBatch,
+  hasValidContextPlaceholders,
   latestActiveEntry,
   macroValue,
   normalizeSettings,
   parseChatState,
   pendingMessages,
+  renderGenerationUserPrompt,
   restoreDeletedChapterSlot,
   selectChapterBatch,
   selectedPrompt,
@@ -261,6 +265,7 @@ function generationContent(result: unknown): string {
 async function generateSummary(
   level: SummaryLevel,
   input: string,
+  contextEntries: SummaryEntry[],
   settings: SummaryPlusSettings,
   signal: AbortSignal,
   userId?: string,
@@ -271,6 +276,11 @@ async function generateSummary(
       `${prompt.name} must include ${INPUT_PLACEHOLDER} in its user prompt.`,
     )
   }
+  if (!hasValidContextPlaceholders(prompt.userPrompt)) {
+    throw new ConfigurationError(
+      `${prompt.name} has an invalid context placeholder. Use ${CONTEXT_PLACEHOLDER_EXAMPLE} with a non-negative integer.`,
+    )
+  }
 
   const messages: Array<{ role: 'system' | 'user'; content: string }> = []
   if (prompt.systemPrompt.trim()) {
@@ -278,7 +288,7 @@ async function generateSummary(
   }
   messages.push({
     role: 'user',
-    content: prompt.userPrompt.replaceAll(INPUT_PLACEHOLDER, input),
+    content: renderGenerationUserPrompt(prompt.userPrompt, input, contextEntries),
   })
 
   const request: GenerationRequestDTO = {
@@ -341,7 +351,14 @@ async function createChapter(
 
   let content: string
   try {
-    content = await generateSummary('chapter', sourceText(batch), settings, signal, userId)
+    content = await generateSummary(
+      'chapter',
+      sourceText(batch),
+      contextEntriesBefore(state, state.nextChapterOrder),
+      settings,
+      signal,
+      userId,
+    )
   } catch (error) {
     if (isAbort(error)) throw error
     await recordFailure(chatId, 'chapter', error, userId)
@@ -412,7 +429,15 @@ async function createPromotion(
 
   let content: string
   try {
-    content = await generateSummary(targetLevel, sourceText(batch), settings, signal, userId)
+    const orderStart = Math.min(...batch.map((entry) => entry.orderStart))
+    content = await generateSummary(
+      targetLevel,
+      sourceText(batch),
+      contextEntriesBefore(state, orderStart),
+      settings,
+      signal,
+      userId,
+    )
   } catch (error) {
     if (isAbort(error)) throw error
     await recordFailure(chatId, targetLevel, error, userId)
@@ -655,6 +680,11 @@ async function saveCustomPrompt(
   if (!incoming.name.trim()) throw new Error('Prompt name cannot be empty.')
   if (!incoming.userPrompt.includes(INPUT_PLACEHOLDER)) {
     throw new Error(`User prompt must include ${INPUT_PLACEHOLDER} before it can be saved.`)
+  }
+  if (!hasValidContextPlaceholders(incoming.userPrompt)) {
+    throw new Error(
+      `Context placeholders must use ${CONTEXT_PLACEHOLDER_EXAMPLE}, where N is a non-negative integer.`,
+    )
   }
   const original = settings.customPrompts[index]
   settings.customPrompts[index] = {

@@ -1,12 +1,15 @@
 import { describe, expect, test } from 'bun:test'
 import {
   activeEntries,
+  contextEntriesBefore,
   createChatState,
   createDefaultSettings,
   deleteActiveEntry,
+  hasValidContextPlaceholders,
   macroValue,
   normalizeSettings,
   pendingMessages,
+  renderGenerationUserPrompt,
   restoreDeletedChapterSlot,
   selectChapterBatch,
   selectPromotionBatch,
@@ -122,6 +125,74 @@ describe('promotion and macros', () => {
     const state = createChatState(true)
     state.entries = [entry('First', 'chapter', 1), entry('Second', 'chapter', 2)]
     expect(macroValue(state, 'chapter')).toBe('First\n\nSecond')
+  })
+})
+
+describe('generation context placeholder', () => {
+  test('selects only active entries strictly before the current batch', () => {
+    const state = createChatState(true)
+    state.entries = [
+      entry('arc-1', 'arc', 1, 8),
+      entry('chapter-9', 'chapter', 9),
+      entry('chapter-10', 'chapter', 10),
+      entry('chapter-input', 'chapter', 11),
+      { ...entry('inactive-old', 'chapter', 2), active: false },
+    ]
+
+    expect(contextEntriesBefore(state, 11).map((candidate) => candidate.id))
+      .toEqual(['arc-1', 'chapter-9', 'chapter-10'])
+  })
+
+  test('injects the requested number of previous entries in chronological order', () => {
+    const context = [
+      entry('Chapter 10', 'chapter', 10),
+      entry('Arc 1', 'arc', 1, 8),
+      entry('Chapter 9', 'chapter', 9),
+    ]
+    const template = [
+      'Previous context:',
+      '{{summaryPlusContext::2}}',
+      '',
+      'Material:',
+      '{{summaryPlusInput}}',
+    ].join('\n')
+
+    expect(renderGenerationUserPrompt(template, 'new messages', context)).toBe([
+      'Previous context:',
+      'Chapter 9',
+      '',
+      'Chapter 10',
+      '',
+      'Material:',
+      'new messages',
+    ].join('\n'))
+  })
+
+  test('supports zero, fewer available entries, and inert placeholder-like source text', () => {
+    const context = [{
+      ...entry('previous', 'chapter', 1),
+      content: 'Keep {{summaryPlusInput}} literal',
+    }]
+    expect(renderGenerationUserPrompt(
+      '{{summaryPlusContext::0}}|{{summaryPlusInput}}',
+      'Keep {{summaryPlusContext::9}} literal',
+      context,
+    )).toBe('|Keep {{summaryPlusContext::9}} literal')
+    expect(renderGenerationUserPrompt(
+      '{{summaryPlusContext::99}}',
+      'unused',
+      context,
+    )).toBe('Keep {{summaryPlusInput}} literal')
+  })
+
+  test('accepts only non-negative integer context arguments', () => {
+    expect(hasValidContextPlaceholders('No context placeholder')).toBe(true)
+    expect(hasValidContextPlaceholders('{{summaryPlusContext::0}}')).toBe(true)
+    expect(hasValidContextPlaceholders('{{summaryPlusContext:: 12 }}')).toBe(true)
+    expect(hasValidContextPlaceholders('{{summaryPlusContext}}')).toBe(false)
+    expect(hasValidContextPlaceholders('{{summaryPlusContext::-1}}')).toBe(false)
+    expect(hasValidContextPlaceholders('{{summaryPlusContext::1.5}}')).toBe(false)
+    expect(hasValidContextPlaceholders('{{summaryPlusContext::3')).toBe(false)
   })
 })
 

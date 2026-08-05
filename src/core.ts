@@ -1,6 +1,10 @@
 export const STATE_KEY = 'summaryplus_state_v1'
 export const SETTINGS_PATH = 'settings.json'
 export const INPUT_PLACEHOLDER = '{{summaryPlusInput}}'
+export const CONTEXT_PLACEHOLDER_EXAMPLE = '{{summaryPlusContext::N}}'
+
+const VALID_CONTEXT_PLACEHOLDER = /^\{\{summaryPlusContext::\s*\d+\s*\}\}$/
+const GENERATION_PLACEHOLDER = /\{\{summaryPlusInput\}\}|\{\{summaryPlusContext::\s*(\d+)\s*\}\}/g
 
 export const LEVELS = ['chapter', 'arc', 'volume'] as const
 export type SummaryLevel = (typeof LEVELS)[number]
@@ -355,6 +359,49 @@ export function activeEntries(
 export function latestActiveEntry(state: ChatState): SummaryEntry | null {
   const entries = activeEntries(state)
   return entries[entries.length - 1] ?? null
+}
+
+export function contextEntriesBefore(
+  state: ChatState,
+  orderStart: number,
+): SummaryEntry[] {
+  return activeEntries(state).filter((entry) => entry.orderEnd < orderStart)
+}
+
+export function hasValidContextPlaceholders(template: string): boolean {
+  let start = template.indexOf('{{summaryPlusContext')
+  while (start >= 0) {
+    const end = template.indexOf('}}', start)
+    if (end < 0) return false
+    const token = template.slice(start, end + 2)
+    if (!VALID_CONTEXT_PLACEHOLDER.test(token)) return false
+    start = template.indexOf('{{summaryPlusContext', end + 2)
+  }
+  return true
+}
+
+export function renderGenerationUserPrompt(
+  template: string,
+  input: string,
+  contextEntries: SummaryEntry[],
+): string {
+  const chronologicalContext = [...contextEntries].sort((left, right) => (
+    left.orderStart - right.orderStart
+    || left.orderEnd - right.orderEnd
+    || left.createdAt.localeCompare(right.createdAt)
+  ))
+  return template.replace(GENERATION_PLACEHOLDER, (token, requestedCount: string | undefined) => {
+    if (token === INPUT_PLACEHOLDER) return input
+    const parsedCount = Number(requestedCount)
+    if (parsedCount === 0) return ''
+    const count = Number.isSafeInteger(parsedCount)
+      ? Math.min(parsedCount, chronologicalContext.length)
+      : chronologicalContext.length
+    return chronologicalContext
+      .slice(chronologicalContext.length - count)
+      .map((entry) => entry.content)
+      .join('\n\n')
+  })
 }
 
 export function macroValue(state: ChatState | null, level: SummaryLevel): string {

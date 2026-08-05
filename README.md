@@ -111,7 +111,25 @@ At generation time the placeholder receives:
 - active Chapter contents for an Arc,
 - active Arc contents for a Volume.
 
-This placeholder is internal to SummaryPlus and is separate from the three public prompt macros.
+User prompts may also include an optional, parameterized context placeholder:
+
+```text
+{{summaryPlusContext::3}}
+```
+
+The non-negative integer selects how many active entries immediately before the current source batch to inject. Selection is level-agnostic: the three entries may be any chronological combination of Volumes, Arcs, and Chapters. Entries in the current batch, delayed entries after it, and inactive entries are excluded. If fewer entries exist, all available entries are used; `0` injects an empty string.
+
+Context entries are joined oldest-to-newest with blank lines and no extension-defined labels or delimiters. The prompt author controls their presentation, for example:
+
+```text
+Previous context, for continuity only:
+{{summaryPlusContext::3}}
+
+Material to summarize:
+{{summaryPlusInput}}
+```
+
+Both placeholders are internal to SummaryPlus and separate from the three public roleplay prompt macros. Omitting `{{summaryPlusContext::N}}` preserves the original context-free generation behavior.
 
 ## Failure behavior
 

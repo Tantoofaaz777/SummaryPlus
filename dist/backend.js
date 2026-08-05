@@ -3,6 +3,9 @@
 var STATE_KEY = "summaryplus_state_v1";
 var SETTINGS_PATH = "settings.json";
 var INPUT_PLACEHOLDER = "{{summaryPlusInput}}";
+var CONTEXT_PLACEHOLDER_EXAMPLE = "{{summaryPlusContext::N}}";
+var VALID_CONTEXT_PLACEHOLDER = /^\{\{summaryPlusContext::\s*\d+\s*\}\}$/;
+var GENERATION_PLACEHOLDER = /\{\{summaryPlusInput\}\}|\{\{summaryPlusContext::\s*(\d+)\s*\}\}/g;
 var LEVELS = ["chapter", "arc", "volume"];
 var BUILTIN_PROMPTS = {
   chapter: {
@@ -201,6 +204,36 @@ function activeEntries(state, level) {
 function latestActiveEntry(state) {
   const entries = activeEntries(state);
   return entries[entries.length - 1] ?? null;
+}
+function contextEntriesBefore(state, orderStart) {
+  return activeEntries(state).filter((entry) => entry.orderEnd < orderStart);
+}
+function hasValidContextPlaceholders(template) {
+  let start = template.indexOf("{{summaryPlusContext");
+  while (start >= 0) {
+    const end = template.indexOf("}}", start);
+    if (end < 0)
+      return false;
+    const token = template.slice(start, end + 2);
+    if (!VALID_CONTEXT_PLACEHOLDER.test(token))
+      return false;
+    start = template.indexOf("{{summaryPlusContext", end + 2);
+  }
+  return true;
+}
+function renderGenerationUserPrompt(template, input, contextEntries) {
+  const chronologicalContext = [...contextEntries].sort((left, right) => left.orderStart - right.orderStart || left.orderEnd - right.orderEnd || left.createdAt.localeCompare(right.createdAt));
+  return template.replace(GENERATION_PLACEHOLDER, (token, requestedCount) => {
+    if (token === INPUT_PLACEHOLDER)
+      return input;
+    const parsedCount = Number(requestedCount);
+    if (parsedCount === 0)
+      return "";
+    const count = Number.isSafeInteger(parsedCount) ? Math.min(parsedCount, chronologicalContext.length) : chronologicalContext.length;
+    return chronologicalContext.slice(chronologicalContext.length - count).map((entry) => entry.content).join(`
+
+`);
+  });
 }
 function macroValue(state, level) {
   if (!state)
@@ -475,10 +508,13 @@ function generationContent(result) {
   }
   return "";
 }
-async function generateSummary(level, input, settings, signal, userId) {
+async function generateSummary(level, input, contextEntries, settings, signal, userId) {
   const prompt = selectedPrompt(settings, level);
   if (!prompt.userPrompt.includes(INPUT_PLACEHOLDER)) {
     throw new ConfigurationError(`${prompt.name} must include ${INPUT_PLACEHOLDER} in its user prompt.`);
+  }
+  if (!hasValidContextPlaceholders(prompt.userPrompt)) {
+    throw new ConfigurationError(`${prompt.name} has an invalid context placeholder. Use ${CONTEXT_PLACEHOLDER_EXAMPLE} with a non-negative integer.`);
   }
   const messages = [];
   if (prompt.systemPrompt.trim()) {
@@ -486,7 +522,7 @@ async function generateSummary(level, input, settings, signal, userId) {
   }
   messages.push({
     role: "user",
-    content: prompt.userPrompt.replaceAll(INPUT_PLACEHOLDER, input)
+    content: renderGenerationUserPrompt(prompt.userPrompt, input, contextEntries)
   });
   const request = {
     type: "quiet",
@@ -539,7 +575,7 @@ async function createChapter(chatId, state, settings, signal, userId) {
     return "none";
   let content;
   try {
-    content = await generateSummary("chapter", sourceText(batch), settings, signal, userId);
+    content = await generateSummary("chapter", sourceText(batch), contextEntriesBefore(state, state.nextChapterOrder), settings, signal, userId);
   } catch (error) {
     if (isAbort(error))
       throw error;
@@ -591,7 +627,8 @@ async function createPromotion(chatId, targetLevel, state, settings, signal, use
     return "none";
   let content;
   try {
-    content = await generateSummary(targetLevel, sourceText(batch), settings, signal, userId);
+    const orderStart = Math.min(...batch.map((entry) => entry.orderStart));
+    content = await generateSummary(targetLevel, sourceText(batch), contextEntriesBefore(state, orderStart), settings, signal, userId);
   } catch (error) {
     if (isAbort(error))
       throw error;
@@ -778,6 +815,9 @@ async function saveCustomPrompt(incoming, userId) {
     throw new Error("Prompt name cannot be empty.");
   if (!incoming.userPrompt.includes(INPUT_PLACEHOLDER)) {
     throw new Error(`User prompt must include ${INPUT_PLACEHOLDER} before it can be saved.`);
+  }
+  if (!hasValidContextPlaceholders(incoming.userPrompt)) {
+    throw new Error(`Context placeholders must use ${CONTEXT_PLACEHOLDER_EXAMPLE}, where N is a non-negative integer.`);
   }
   const original = settings.customPrompts[index];
   settings.customPrompts[index] = {
