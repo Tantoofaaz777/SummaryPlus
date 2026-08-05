@@ -554,6 +554,7 @@ var processingChats = new Set;
 var queuedChats = new Set;
 var controllers = new Map;
 var generationProgressByChat = new Map;
+var frontendUserIds = new Set;
 function now() {
   return new Date().toISOString();
 }
@@ -718,6 +719,8 @@ async function createSnapshot(userId) {
   };
 }
 async function publishSnapshot(userId) {
+  if (!userId)
+    return;
   try {
     spindle.sendToFrontend({
       type: "snapshot",
@@ -726,6 +729,10 @@ async function publishSnapshot(userId) {
   } catch (error) {
     publishActionError(error, userId);
   }
+}
+function publishSnapshotsForKnownUsers() {
+  for (const userId of frontendUserIds)
+    publishSnapshot(userId);
 }
 function publishActionError(error, userId) {
   const message = errorMessage(error);
@@ -1463,6 +1470,7 @@ for (const level of LEVELS) {
 spindle.onFrontendMessage((payload, userId) => {
   if (!isFrontendRequest(payload))
     return;
+  frontendUserIds.add(userId);
   handleFrontendRequest(payload, userId).catch((error) => publishActionError(error, userId));
 });
 spindle.on("CHAT_SWITCHED", (payload, userId) => {
@@ -1499,10 +1507,15 @@ for (const event of ["MESSAGE_EDITED", "MESSAGE_DELETED", "MESSAGE_SWIPED", "SWI
 }
 for (const event of ["REGEX_SCRIPT_CHANGED", "REGEX_SCRIPT_DELETED"]) {
   spindle.on(event, (_payload, userId) => {
-    publishSnapshot(userId);
+    if (userId) {
+      frontendUserIds.add(userId);
+      publishSnapshot(userId);
+    } else {
+      publishSnapshotsForKnownUsers();
+    }
   });
 }
-spindle.on("PERMISSION_CHANGED", (payload, userId) => {
+spindle.on("PERMISSION_CHANGED", (payload) => {
   if (!payload || typeof payload !== "object")
     return;
   const event = payload;
@@ -1511,6 +1524,6 @@ spindle.on("PERMISSION_CHANGED", (payload, userId) => {
       controller.abort();
   }
   if (event.permission === "regex_scripts")
-    publishSnapshot(userId);
+    publishSnapshotsForKnownUsers();
 });
 spindle.log.info("SummaryPlus 0.0.1 loaded.");

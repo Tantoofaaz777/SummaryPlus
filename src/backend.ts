@@ -85,6 +85,7 @@ const processingChats = new Set<string>()
 const queuedChats = new Set<string>()
 const controllers = new Map<string, AbortController>()
 const generationProgressByChat = new Map<string, GenerationProgress>()
+const frontendUserIds = new Set<string>()
 
 function now(): string {
   return new Date().toISOString()
@@ -291,6 +292,7 @@ async function createSnapshot(userId?: string): Promise<Snapshot> {
 }
 
 async function publishSnapshot(userId?: string): Promise<void> {
+  if (!userId) return
   try {
     spindle.sendToFrontend({
       type: 'snapshot',
@@ -299,6 +301,10 @@ async function publishSnapshot(userId?: string): Promise<void> {
   } catch (error) {
     publishActionError(error, userId)
   }
+}
+
+function publishSnapshotsForKnownUsers(): void {
+  for (const userId of frontendUserIds) void publishSnapshot(userId)
 }
 
 function publishActionError(error: unknown, userId?: string): void {
@@ -1278,6 +1284,7 @@ for (const level of LEVELS) {
 
 spindle.onFrontendMessage((payload, userId) => {
   if (!isFrontendRequest(payload)) return
+  frontendUserIds.add(userId)
   void handleFrontendRequest(payload, userId).catch((error) => publishActionError(error, userId))
 })
 
@@ -1318,17 +1325,22 @@ for (const event of ['MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'SWI
 
 for (const event of ['REGEX_SCRIPT_CHANGED', 'REGEX_SCRIPT_DELETED']) {
   spindle.on(event, (_payload: unknown, userId?: string) => {
-    void publishSnapshot(userId)
+    if (userId) {
+      frontendUserIds.add(userId)
+      void publishSnapshot(userId)
+    } else {
+      publishSnapshotsForKnownUsers()
+    }
   })
 }
 
-spindle.on('PERMISSION_CHANGED', (payload: unknown, userId?: string) => {
+spindle.on('PERMISSION_CHANGED', (payload: unknown) => {
   if (!payload || typeof payload !== 'object') return
   const event = payload as { granted?: unknown; permission?: unknown }
   if (!event.granted && event.permission === 'generation') {
     for (const controller of controllers.values()) controller.abort()
   }
-  if (event.permission === 'regex_scripts') void publishSnapshot(userId)
+  if (event.permission === 'regex_scripts') publishSnapshotsForKnownUsers()
 })
 
 spindle.log.info('SummaryPlus 0.0.1 loaded.')

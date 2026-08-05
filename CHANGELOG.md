@@ -10,3 +10,4 @@
 - Added chat-persisted state, user-persisted settings, cancellation, retries, and failure recovery.
 - Added `summaryPlusChapter`, `summaryPlusArc`, and `summaryPlusVolume` macros.
 - Added independently enabled and reorderable Lumiverse prompt-regex preprocessing for Chapter sources.
+- Fixed regex-permission refreshes for operator-scoped Lumiverse installations.
