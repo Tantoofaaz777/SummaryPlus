@@ -360,6 +360,7 @@ const STYLES = `
 }
 .summaryplus-trimming-options { display: flex; flex-direction: column; gap: 10px; }
 .summaryplus-trimming-options[hidden] { display: none; }
+.summaryplus-trimming-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .summaryplus-trimming-action { width: 100%; }
 .summaryplus-regex-ghost {
   opacity: 1 !important;
@@ -435,6 +436,7 @@ const STYLES = `
   .summaryplus-grid { grid-template-columns: 1fr; }
   .summaryplus-field.is-wide { grid-column: auto; }
   .summaryplus-stats { grid-template-columns: repeat(2, 1fr); }
+  .summaryplus-trimming-actions { grid-template-columns: 1fr; }
 }
 `
 
@@ -1384,6 +1386,16 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     const ownedHiddenMessageCount = new Set(
       data.state?.entries.flatMap((entry) => entry.autoHiddenSourceIds ?? []) ?? [],
     ).size
+    const summarizedChapterCount = data.state?.entries.filter((entry) => (
+      entry.level === 'chapter' && !entry.deletedAt
+    )).length ?? 0
+    const hideAllButton = button(
+      'Hide all summarized messages',
+      () => send({ type: 'hide_all_summarized_messages' }),
+      'is-quiet is-tint-primary',
+      summarizedChapterCount === 0 || data.processing,
+    )
+    hideAllButton.classList.add('summaryplus-trimming-action')
     const unhideButton = button(
       'Unhide SummaryPlus messages',
       () => send({ type: 'unhide_summaryplus_messages' }),
@@ -1393,11 +1405,13 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     unhideButton.classList.add('summaryplus-trimming-action')
     const trimmingOptions = element('div', 'summaryplus-trimming-options')
     trimmingOptions.hidden = !hideSummarizedMessages.checked
-    trimmingOptions.append(hideDelayChapters.field, unhideButton)
+    trimmingOptions.append(hideDelayChapters.field)
+    const trimmingActions = element('div', 'summaryplus-trimming-actions')
+    trimmingActions.append(hideAllButton, unhideButton)
     hideSummarizedMessages.addEventListener('change', () => {
       trimmingOptions.hidden = !hideSummarizedMessages.checked
     })
-    automationSection.append(trimmingRow, trimmingOptions)
+    automationSection.append(trimmingRow, trimmingOptions, trimmingActions)
 
     const modelSection = element('section', 'summaryplus-section')
     modelSection.appendChild(element('h3', 'summaryplus-section-title', 'Generation'))

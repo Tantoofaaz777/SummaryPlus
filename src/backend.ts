@@ -33,6 +33,7 @@ import {
   parseChatState,
   pendingMessages,
   renderGenerationUserPrompt,
+  releaseSummaryPlusHiddenMessages,
   restoreDeletedChapterSlot,
   selectChapterBatch,
   selectedPrompt,
@@ -68,6 +69,7 @@ type FrontendRequest =
   | { type: 'edit_entry'; entryId: string; value: string }
   | { type: 'regenerate_entry'; entryId: string }
   | { type: 'delete_entry'; entryId: string }
+  | { type: 'hide_all_summarized_messages' }
   | { type: 'unhide_summaryplus_messages' }
   | { type: 'save_entries'; entries: Array<{ id: string; content: string }> }
   | { type: 'save_settings'; settings: Partial<SummaryPlusSettings> }
@@ -265,9 +267,63 @@ async function unhideSummaryPlusMessages(chatId: string, userId?: string): Promi
     assertBranchReady(state)
     const messageIds = summaryPlusHiddenMessageIds(state)
     await setMessagesHiddenInBatches(chatId, messageIds, false)
-    for (const entry of state.entries) delete entry.autoHiddenSourceIds
+    releaseSummaryPlusHiddenMessages(state)
     await saveState(chatId, state)
     return messageIds.length
+  } finally {
+    trimmingChats.delete(chatId)
+    if (queuedChats.has(chatId) && !processingChats.has(chatId)) {
+      void runProcessing(chatId, userId)
+    }
+  }
+}
+
+async function hideAllSummarizedMessages(chatId: string, userId?: string): Promise<number> {
+  if (processingChats.has(chatId)) {
+    throw new Error('Wait for processing to finish, or cancel it before hiding messages.')
+  }
+  if (trimmingChats.has(chatId)) {
+    throw new Error('Wait for automatic message hiding to finish before hiding messages.')
+  }
+
+  trimmingChats.add(chatId)
+  try {
+    const [state, messages] = await Promise.all([
+      ensureState(chatId, 'view', userId),
+      getMessages(chatId),
+    ])
+    assertBranchReady(state)
+
+    const messagesById = new Map(messages.map((message) => [String(message.id), message]))
+    const chapters = state.entries.filter((entry) => (
+      entry.level === 'chapter' && !entry.deletedAt
+    ))
+    const newlyOwnedIds = new Set<string>()
+    const allOwnedIds = new Set<string>()
+
+    for (const chapter of chapters) {
+      const ownedIds = new Set(chapter.autoHiddenSourceIds ?? [])
+      for (const sourceId of chapter.sourceIds) {
+        const message = messagesById.get(sourceId)
+        if (!message || message.hidden) continue
+        ownedIds.add(sourceId)
+        newlyOwnedIds.add(sourceId)
+      }
+      chapter.autoHiddenSourceIds = [...ownedIds]
+      for (const sourceId of ownedIds) {
+        if (messagesById.has(sourceId)) allOwnedIds.add(sourceId)
+      }
+    }
+
+    // Persist ownership before mutating the chat so user-hidden messages stay
+    // excluded and a partial API failure can still be safely reversed.
+    await saveState(chatId, state)
+    await setMessagesHiddenInBatches(chatId, [...allOwnedIds], true)
+
+    const handledAt = now()
+    for (const chapter of chapters) chapter.hideHandledAt = handledAt
+    await saveState(chatId, state)
+    return newlyOwnedIds.size
   } finally {
     trimmingChats.delete(chatId)
     if (queuedChats.has(chatId) && !processingChats.has(chatId)) {
@@ -1405,7 +1461,12 @@ async function saveGlobalSettings(
   if (current.automationEnabled && !next.automationEnabled) {
     for (const controller of controllers.values()) controller.abort()
   }
-  if (next.hideSummarizedMessages) {
+  const shouldReconcileTrimming = next.hideSummarizedMessages && (
+    !current.hideSummarizedMessages
+    || current.hideDelayChapters !== next.hideDelayChapters
+    || (!current.automationEnabled && next.automationEnabled)
+  )
+  if (shouldReconcileTrimming) {
     const chatId = await activeChatId(userId)
     if (chatId) await requestTrimming(chatId, userId)
   }
@@ -1602,6 +1663,18 @@ async function handleFrontendRequest(payload: FrontendRequest, userId: string): 
         count === 0
           ? 'No messages are currently managed by SummaryPlus trimming.'
           : `${count} ${count === 1 ? 'message' : 'messages'} unhidden.`,
+        userId,
+      )
+      await publishSnapshot(userId)
+      return
+    }
+    case 'hide_all_summarized_messages': {
+      if (!chatId) throw new Error('Open a chat before hiding summarized messages.')
+      const count = await hideAllSummarizedMessages(chatId, userId)
+      publishActionSuccess(
+        count === 0
+          ? 'All available summarized messages are already hidden.'
+          : `${count} summarized ${count === 1 ? 'message' : 'messages'} hidden.`,
         userId,
       )
       await publishSnapshot(userId)

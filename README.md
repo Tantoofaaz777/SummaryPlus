@@ -98,11 +98,11 @@ Only the most recent active entry can be regenerated or deleted. Regeneration re
 
 ## Automatic trimming
 
-The **Trimming** card can automatically hide a Chapter's source messages after successful Chapter creation. Lumiverse excludes hidden messages from normal prompt-history assembly while keeping them in persisted chat history, so SummaryPlus can still find the original sources for regeneration and branch synchronization.
+The **Automation** card can automatically hide a Chapter's source messages after successful Chapter creation. Lumiverse excludes hidden messages from normal prompt-history assembly while keeping them in persisted chat history, so SummaryPlus can still find the original sources for regeneration and branch synchronization.
 
 Trimming is disabled by default. Its delay is measured in completed Chapters: `0` hides a Chapter's messages immediately, `1` keeps the newest Chapter's messages visible, and `N` keeps the newest `N` Chapters visible. Arc and Volume promotion never changes message visibility.
 
-SummaryPlus records only messages that it changed from visible to hidden. Messages already hidden by the user are never claimed or unhidden by the extension. Deleting a Chapter unhides its SummaryPlus-owned source messages before releasing them, and **Unhide SummaryPlus messages** restores all currently owned messages without reprocessing summaries. Disabling trimming stops future hides but does not automatically unhide previous ones.
+SummaryPlus records only messages that it changed from visible to hidden. Messages already hidden by the user are never claimed or unhidden by the extension. Deleting a Chapter unhides its SummaryPlus-owned source messages before releasing them. **Unhide SummaryPlus messages** is always available, restores all currently owned messages without reprocessing summaries, and releases their Chapters so a later automation reactivation can hide them again. **Hide all summarized messages** is also always available and hides every existing Chapter source immediately, ignoring the configured Chapter delay. Disabling trimming stops future automatic hides but does not automatically unhide previous ones.
 
 ## Defaults
 

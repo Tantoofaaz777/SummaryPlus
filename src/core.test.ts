@@ -18,6 +18,7 @@ import {
   orderBySavedIds,
   orderedSourceItems,
   pendingMessages,
+  releaseSummaryPlusHiddenMessages,
   renderGenerationUserPrompt,
   restoreDeletedChapterSlot,
   selectChapterBatch,
@@ -205,6 +206,27 @@ describe('message trimming', () => {
     expect(chaptersReadyForTrimming(state, 0).map((chapter) => chapter.id))
       .toEqual(['c2', 'c4'])
     expect(summaryPlusHiddenMessageIds(state)).toEqual(['m1', 'm2', 'm3'])
+  })
+
+  test('unhiding releases owned messages and makes handled Chapters eligible again', () => {
+    const state = createChatState(true)
+    state.entries = [
+      {
+        ...entry('c1', 'chapter', 1),
+        hideHandledAt: '2026-08-05T20:00:00.000Z',
+        autoHiddenSourceIds: ['m1', 'm2'],
+      },
+      {
+        ...entry('c2', 'chapter', 2),
+        hideHandledAt: '2026-08-05T20:01:00.000Z',
+        autoHiddenSourceIds: ['m2', 'm3'],
+      },
+    ]
+
+    expect(releaseSummaryPlusHiddenMessages(state)).toEqual(['m1', 'm2', 'm3'])
+    expect(summaryPlusHiddenMessageIds(state)).toEqual([])
+    expect(chaptersReadyForTrimming(state, 0).map((chapter) => chapter.id))
+      .toEqual(['c1', 'c2'])
   })
 })
 

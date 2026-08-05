@@ -311,6 +311,15 @@ function chaptersReadyForTrimming(state, delay) {
 function summaryPlusHiddenMessageIds(state) {
   return uniqueStringIds(state.entries.flatMap((entry) => entry.autoHiddenSourceIds ?? []));
 }
+function releaseSummaryPlusHiddenMessages(state) {
+  const messageIds = summaryPlusHiddenMessageIds(state);
+  for (const entry of state.entries) {
+    delete entry.autoHiddenSourceIds;
+    if (entry.level === "chapter")
+      delete entry.hideHandledAt;
+  }
+  return messageIds;
+}
 function sourceText(items) {
   return items.map((item) => item.content).join(`
 
@@ -951,10 +960,56 @@ async function unhideSummaryPlusMessages(chatId, userId) {
     assertBranchReady(state);
     const messageIds = summaryPlusHiddenMessageIds(state);
     await setMessagesHiddenInBatches(chatId, messageIds, false);
-    for (const entry of state.entries)
-      delete entry.autoHiddenSourceIds;
+    releaseSummaryPlusHiddenMessages(state);
     await saveState(chatId, state);
     return messageIds.length;
+  } finally {
+    trimmingChats.delete(chatId);
+    if (queuedChats.has(chatId) && !processingChats.has(chatId)) {
+      runProcessing(chatId, userId);
+    }
+  }
+}
+async function hideAllSummarizedMessages(chatId, userId) {
+  if (processingChats.has(chatId)) {
+    throw new Error("Wait for processing to finish, or cancel it before hiding messages.");
+  }
+  if (trimmingChats.has(chatId)) {
+    throw new Error("Wait for automatic message hiding to finish before hiding messages.");
+  }
+  trimmingChats.add(chatId);
+  try {
+    const [state, messages] = await Promise.all([
+      ensureState(chatId, "view", userId),
+      getMessages(chatId)
+    ]);
+    assertBranchReady(state);
+    const messagesById = new Map(messages.map((message) => [String(message.id), message]));
+    const chapters = state.entries.filter((entry) => entry.level === "chapter" && !entry.deletedAt);
+    const newlyOwnedIds = new Set;
+    const allOwnedIds = new Set;
+    for (const chapter of chapters) {
+      const ownedIds = new Set(chapter.autoHiddenSourceIds ?? []);
+      for (const sourceId of chapter.sourceIds) {
+        const message = messagesById.get(sourceId);
+        if (!message || message.hidden)
+          continue;
+        ownedIds.add(sourceId);
+        newlyOwnedIds.add(sourceId);
+      }
+      chapter.autoHiddenSourceIds = [...ownedIds];
+      for (const sourceId of ownedIds) {
+        if (messagesById.has(sourceId))
+          allOwnedIds.add(sourceId);
+      }
+    }
+    await saveState(chatId, state);
+    await setMessagesHiddenInBatches(chatId, [...allOwnedIds], true);
+    const handledAt = now();
+    for (const chapter of chapters)
+      chapter.hideHandledAt = handledAt;
+    await saveState(chatId, state);
+    return newlyOwnedIds.size;
   } finally {
     trimmingChats.delete(chatId);
     if (queuedChats.has(chatId) && !processingChats.has(chatId)) {
@@ -1759,7 +1814,8 @@ async function saveGlobalSettings(incoming, userId) {
     for (const controller of controllers.values())
       controller.abort();
   }
-  if (next.hideSummarizedMessages) {
+  const shouldReconcileTrimming = next.hideSummarizedMessages && (!current.hideSummarizedMessages || current.hideDelayChapters !== next.hideDelayChapters || !current.automationEnabled && next.automationEnabled);
+  if (shouldReconcileTrimming) {
     const chatId = await activeChatId(userId);
     if (chatId)
       await requestTrimming(chatId, userId);
@@ -1948,6 +2004,14 @@ async function handleFrontendRequest(payload, userId) {
         throw new Error("Open a chat before unhiding messages.");
       const count = await unhideSummaryPlusMessages(chatId, userId);
       publishActionSuccess(count === 0 ? "No messages are currently managed by SummaryPlus trimming." : `${count} ${count === 1 ? "message" : "messages"} unhidden.`, userId);
+      await publishSnapshot(userId);
+      return;
+    }
+    case "hide_all_summarized_messages": {
+      if (!chatId)
+        throw new Error("Open a chat before hiding summarized messages.");
+      const count = await hideAllSummarizedMessages(chatId, userId);
+      publishActionSuccess(count === 0 ? "All available summarized messages are already hidden." : `${count} summarized ${count === 1 ? "message" : "messages"} hidden.`, userId);
       await publishSnapshot(userId);
       return;
     }

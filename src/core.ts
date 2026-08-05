@@ -581,6 +581,15 @@ export function summaryPlusHiddenMessageIds(state: ChatState): string[] {
   )
 }
 
+export function releaseSummaryPlusHiddenMessages(state: ChatState): string[] {
+  const messageIds = summaryPlusHiddenMessageIds(state)
+  for (const entry of state.entries) {
+    delete entry.autoHiddenSourceIds
+    if (entry.level === 'chapter') delete entry.hideHandledAt
+  }
+  return messageIds
+}
+
 export function sourceText(items: Array<{ content: string }>): string {
   return items.map((item) => item.content).join('\n\n')
 }

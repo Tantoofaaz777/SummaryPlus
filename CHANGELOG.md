@@ -20,3 +20,5 @@
 - Centered all screen headers with wider vertical spacing and replaced the automation checkbox with a themed switch.
 - Shortened the Prompt Library navigation-tab label to Prompts.
 - Moved Trimming into the top Automation card beneath Automatic processing.
+- Fixed manual unhiding so eligible Chapters can be hidden again after automation is reactivated.
+- Added always-visible manual controls to hide all summarized messages without delay or unhide all SummaryPlus-owned messages.
