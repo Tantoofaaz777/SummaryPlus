@@ -1,0 +1,135 @@
+# SummaryPlus
+
+SummaryPlus is a Lumiverse extension that turns long roleplay chats into a three-level, editable story memory:
+
+- **Chapter** summarizes a fixed batch of persisted chat messages.
+- **Arc** consolidates a fixed batch of active Chapters.
+- **Volume** consolidates a fixed batch of active Arcs.
+
+The extension keeps the active entries at every level in chronological order and exposes each level through its own prompt macro. SummaryPlus never injects delimiters or labels into macro output; prompt authors retain full control over presentation.
+
+## Requirements
+
+- Lumiverse 1.1.2 or newer
+- At least one configured Lumiverse LLM connection
+- Permissions requested by the extension:
+  - `generation` for quiet summary calls and connection discovery
+  - `chat_mutation` to read persisted chat history
+  - `chats` to identify the currently active chat
+
+## Installation
+
+In Lumiverse, open **Extensions**, install from this GitHub repository URL, grant the requested permissions, and enable SummaryPlus:
+
+```text
+https://github.com/Tantoofaaz777/SummaryPlus
+```
+
+The compiled `dist/` bundles are included in the repository, so installation does not depend on a local build step.
+
+## Prompt macros
+
+SummaryPlus registers:
+
+- `{{summaryPlusVolume}}`
+- `{{summaryPlusArc}}`
+- `{{summaryPlusChapter}}`
+
+Each macro returns only the currently active summaries at that level, ordered from oldest to newest and joined by one blank line. An empty level returns an empty string.
+
+A typical roleplay prompt can decide the hierarchy and delimiters itself:
+
+```text
+{{if::{{summaryPlusVolume}}}}
+{{summaryPlusVolume}}
+{{/if}}
+
+{{if::{{summaryPlusArc}}}}
+{{summaryPlusArc}}
+{{/if}}
+
+{{if::{{summaryPlusChapter}}}}
+{{summaryPlusChapter}}
+{{/if}}
+```
+
+`{{arc}}` is a native Lumiverse macro and is not used by this extension.
+
+## Counting and delay behavior
+
+Only records returned by Lumiverse's persisted chat-history API are counted. Prompt assembly, presets, world books, SummaryPlus's own generation prompts, and quiet-generation calls are not part of the count.
+
+Every persisted record counts as one message. Summary input contains only the active message contents, in history order, separated by blank lines. Names, roles, IDs, timestamps, metadata, reasoning, and inactive swipes are omitted.
+
+Delays are item-count lookaheads, not timers. With 6 messages per Chapter and a delay of 3, reaching 9 pending messages summarizes messages 1–6; messages 7–9 are not sent to the summarizing model and stay pending for a later batch. Batches are consecutive and never overlap.
+
+Deleting or editing a message before its Chapter is committed causes SummaryPlus to re-read and revalidate the current history. Already-created summaries are never silently rewritten after a configuration or chat-history change.
+
+## Existing chats
+
+When SummaryPlus first encounters a chat with more than its opening message, automation stays paused for that chat. The main screen displays a **Process history & enable** button. Pressing it processes every currently eligible batch in sequence, with all configured delays respected, and then enables normal automatic processing for that chat.
+
+A chat first encountered with only its opening message is treated as new and may use automation immediately.
+
+## Promotion and editing
+
+When an Arc succeeds, its source Chapters become archived and disappear from the Chapter macro. When a Volume succeeds, its source Arcs do the same. Archived entries remain in persisted state with their parent reference; promotion is committed only after a successful model response.
+
+The Summary screen displays the combined active timeline and offers All, Volume, Arc, and Chapter filters. Every visible summary is editable. Saved edits become the authoritative source if that entry is later promoted.
+
+## Defaults
+
+| Setting | Default |
+| --- | ---: |
+| Messages per Chapter | 24 |
+| Message delay | 12 |
+| Chapters per Arc | 8 |
+| Chapter delay | 2 |
+| Arcs per Volume | 8 |
+| Arc delay | 2 |
+| Retries after the first call | 1 |
+| Temperature | 0.2 |
+| Top P | 1 |
+| Maximum response tokens | 4096 |
+| Global automation | On |
+
+Retries are additional attempts after the initial call. SummaryPlus imposes no arbitrary maximum on the value selected by the user.
+
+## Prompts
+
+Chapter, Arc, and Volume each have an independent protected default prompt with separate System and User fields. Default prompts cannot be edited or deleted; duplicate one to create a customizable copy. Custom prompts can be renamed, duplicated, selected, edited, and deleted.
+
+The User prompt must contain the private placeholder:
+
+```text
+{{summaryPlusInput}}
+```
+
+At generation time the placeholder receives:
+
+- raw persisted message contents for a Chapter,
+- active Chapter contents for an Arc,
+- active Arc contents for a Volume.
+
+This placeholder is internal to SummaryPlus and is separate from the three public prompt macros.
+
+## Failure behavior
+
+Provider errors, timeouts, and empty responses use the configured retry count with a one-second pause between attempts. Cancellation, disabling automation, or losing generation permission aborts without retrying.
+
+After all attempts fail, source items remain active and unmodified. The main screen shows the failed level and provider error, and **Process now** can resume from the same oldest eligible batch.
+
+## Development
+
+```bash
+bun install
+bun run typecheck
+bun test
+bun run build
+```
+
+Source files live in `src/`; distributable backend and frontend bundles are emitted to `dist/`.
+
+## License
+
+[GNU Affero General Public License v3.0](LICENSE)

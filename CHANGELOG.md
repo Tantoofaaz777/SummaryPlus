@@ -1,0 +1,11 @@
+# Changelog
+
+## 0.0.1 — 2026-08-05
+
+- Added chronological Chapter, Arc, and Volume summary generation.
+- Added count-based delays, fixed non-overlapping batches, and sequential catch-up.
+- Added editable active-summary timeline with level filters.
+- Added independent protected and custom prompts for all three levels.
+- Added global connection, sampling, token, retry, and automation settings.
+- Added chat-persisted state, user-persisted settings, cancellation, retries, and failure recovery.
+- Added `summaryPlusChapter`, `summaryPlusArc`, and `summaryPlusVolume` macros.

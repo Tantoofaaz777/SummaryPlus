@@ -1,0 +1,588 @@
+// src/core.ts
+var INPUT_PLACEHOLDER = "{{summaryPlusInput}}";
+var LEVELS = ["chapter", "arc", "volume"];
+function activeEntries(state, level) {
+  return state.entries.filter((entry) => entry.active && (!level || entry.level === level)).sort((left, right) => left.orderStart - right.orderStart || left.orderEnd - right.orderEnd || left.createdAt.localeCompare(right.createdAt));
+}
+
+// src/frontend.ts
+var LEVEL_LABEL = {
+  chapter: "Chapter",
+  arc: "Arc",
+  volume: "Volume"
+};
+var ICON = `
+<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <path d="M6.5 4.5h11M6.5 9.5h11M6.5 14.5h7M4 4.5h.01M4 9.5h.01M4 14.5h.01" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+  <path d="M14.5 18.5 17 21l4-5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>`;
+var STYLES = `
+.summaryplus-root {
+  --sp-accent: var(--lumiverse-primary, #8b78f6);
+  --sp-accent-soft: color-mix(in srgb, var(--sp-accent) 14%, transparent);
+  --sp-surface: var(--lumiverse-fill, rgba(255, 255, 255, 0.045));
+  --sp-surface-subtle: var(--lumiverse-fill-subtle, rgba(255, 255, 255, 0.025));
+  --sp-border: var(--lumiverse-border, rgba(255, 255, 255, 0.11));
+  --sp-text: var(--lumiverse-text, inherit);
+  --sp-muted: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.62));
+  min-height: 100%;
+  color: var(--sp-text);
+  font: inherit;
+}
+.summaryplus-root * { box-sizing: border-box; }
+.summaryplus-shell { display: flex; flex-direction: column; min-height: 100%; }
+.summaryplus-nav {
+  position: sticky; top: 0; z-index: 3; display: grid; grid-template-columns: 1fr 1fr;
+  gap: 4px; padding: 10px 12px; border-bottom: 1px solid var(--sp-border);
+  background: var(--lumiverse-background, rgba(20, 20, 24, .94)); backdrop-filter: blur(12px);
+}
+.summaryplus-nav button, .summaryplus-pill {
+  appearance: none; border: 1px solid transparent; border-radius: 999px; padding: 7px 11px;
+  background: transparent; color: var(--sp-muted); font: inherit; font-size: 12px;
+  font-weight: 650; cursor: pointer; transition: background .16s, color .16s, border-color .16s;
+}
+.summaryplus-nav button:hover, .summaryplus-pill:hover { color: var(--sp-text); background: var(--sp-surface); }
+.summaryplus-nav button.is-active, .summaryplus-pill.is-active {
+  color: var(--sp-text); background: var(--sp-accent-soft); border-color: color-mix(in srgb, var(--sp-accent) 38%, transparent);
+}
+.summaryplus-content { display: flex; flex-direction: column; gap: 14px; padding: 14px 12px 22px; }
+.summaryplus-hero { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.summaryplus-eyebrow { color: var(--sp-accent); font-size: 10px; font-weight: 800; letter-spacing: .13em; text-transform: uppercase; }
+.summaryplus-title { margin: 3px 0 2px; font-size: 18px; line-height: 1.25; font-weight: 750; }
+.summaryplus-copy, .summaryplus-help { color: var(--sp-muted); font-size: 12px; line-height: 1.55; }
+.summaryplus-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.summaryplus-stat { min-width: 0; padding: 8px 6px; border: 1px solid var(--sp-border); border-radius: 10px; background: var(--sp-surface-subtle); text-align: center; }
+.summaryplus-stat strong { display: block; overflow: hidden; font-size: 15px; text-overflow: ellipsis; }
+.summaryplus-stat span { display: block; margin-top: 1px; color: var(--sp-muted); font-size: 9px; letter-spacing: .06em; text-transform: uppercase; }
+.summaryplus-banner { padding: 11px 12px; border: 1px solid var(--sp-border); border-radius: 11px; background: var(--sp-surface); font-size: 12px; line-height: 1.5; }
+.summaryplus-banner.is-warning { border-color: color-mix(in srgb, #e6ad43 46%, transparent); background: color-mix(in srgb, #e6ad43 10%, transparent); }
+.summaryplus-banner.is-error { border-color: color-mix(in srgb, #e16464 48%, transparent); background: color-mix(in srgb, #e16464 10%, transparent); }
+.summaryplus-banner.is-success { border-color: color-mix(in srgb, #59b889 44%, transparent); background: color-mix(in srgb, #59b889 9%, transparent); }
+.summaryplus-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.summaryplus-toolbar.is-split { justify-content: space-between; }
+.summaryplus-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+.summaryplus-button {
+  appearance: none; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  min-height: 34px; border: 1px solid var(--sp-border); border-radius: 9px; padding: 7px 11px;
+  background: var(--sp-surface); color: var(--sp-text); font: inherit; font-size: 12px; font-weight: 650;
+  cursor: pointer; transition: transform .12s, background .16s, opacity .16s;
+}
+.summaryplus-button:hover:not(:disabled) { background: color-mix(in srgb, var(--sp-accent) 12%, var(--sp-surface)); }
+.summaryplus-button:active:not(:disabled) { transform: translateY(1px); }
+.summaryplus-button:disabled { cursor: not-allowed; opacity: .48; }
+.summaryplus-button.is-primary { color: #fff; border-color: transparent; background: var(--sp-accent); }
+.summaryplus-button.is-danger { color: #ef8585; }
+.summaryplus-button.is-quiet { min-height: 30px; padding: 5px 8px; background: transparent; }
+.summaryplus-stack { overflow: hidden; border: 1px solid var(--sp-border); border-radius: 12px; background: var(--sp-surface-subtle); }
+.summaryplus-entry { padding: 11px; }
+.summaryplus-entry + .summaryplus-entry { border-top: 1px solid var(--sp-border); }
+.summaryplus-entry-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 7px; }
+.summaryplus-entry-label { color: var(--sp-muted); font-size: 10px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+.summaryplus-entry-meta { color: var(--sp-muted); font-size: 10px; }
+.summaryplus-textarea, .summaryplus-input, .summaryplus-select {
+  width: 100%; border: 1px solid var(--sp-border); border-radius: 9px; outline: none;
+  background: var(--lumiverse-background, rgba(0, 0, 0, .16)); color: var(--sp-text);
+  font: inherit; font-size: 12px; transition: border-color .16s, box-shadow .16s;
+}
+.summaryplus-textarea:focus, .summaryplus-input:focus, .summaryplus-select:focus {
+  border-color: color-mix(in srgb, var(--sp-accent) 70%, var(--sp-border));
+  box-shadow: 0 0 0 3px var(--sp-accent-soft);
+}
+.summaryplus-textarea { min-height: 112px; resize: vertical; padding: 10px; line-height: 1.55; }
+.summaryplus-input, .summaryplus-select { height: 36px; padding: 0 9px; }
+.summaryplus-textarea:read-only, .summaryplus-input:read-only { opacity: .72; cursor: default; }
+.summaryplus-empty { padding: 30px 18px; border: 1px dashed var(--sp-border); border-radius: 12px; text-align: center; }
+.summaryplus-empty strong { display: block; margin-bottom: 5px; font-size: 13px; }
+.summaryplus-section { display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--sp-border); border-radius: 12px; background: var(--sp-surface-subtle); }
+.summaryplus-section-title { margin: 0; font-size: 13px; font-weight: 750; }
+.summaryplus-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.summaryplus-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.summaryplus-field.is-wide { grid-column: 1 / -1; }
+.summaryplus-label { font-size: 11px; font-weight: 650; }
+.summaryplus-field small { color: var(--sp-muted); font-size: 10px; line-height: 1.4; }
+.summaryplus-switch { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.summaryplus-switch input { width: 17px; height: 17px; accent-color: var(--sp-accent); }
+.summaryplus-prompt-head { display: flex; gap: 7px; }
+.summaryplus-prompt-head .summaryplus-select { flex: 1; min-width: 0; }
+.summaryplus-builtin { display: inline-flex; align-items: center; width: fit-content; padding: 3px 7px; border-radius: 999px; background: var(--sp-accent-soft); color: var(--sp-accent); font-size: 9px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.summaryplus-placeholder-status { font-size: 10px; }
+.summaryplus-placeholder-status.is-valid { color: #65bd91; }
+.summaryplus-placeholder-status.is-invalid { color: #e57979; }
+.summaryplus-loading { display: flex; align-items: center; justify-content: center; min-height: 220px; color: var(--sp-muted); font-size: 12px; }
+.summaryplus-dot { width: 7px; height: 7px; margin-right: 8px; border-radius: 50%; background: var(--sp-accent); animation: summaryplus-pulse 1s ease-in-out infinite alternate; }
+@keyframes summaryplus-pulse { to { opacity: .28; transform: scale(.78); } }
+@media (max-width: 370px) {
+  .summaryplus-grid { grid-template-columns: 1fr; }
+  .summaryplus-field.is-wide { grid-column: auto; }
+  .summaryplus-stats { grid-template-columns: repeat(2, 1fr); }
+}
+`;
+function element(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className)
+    node.className = className;
+  if (text !== undefined)
+    node.textContent = text;
+  return node;
+}
+function button(label, onClick, className = "", disabled = false) {
+  const node = element("button", `summaryplus-button ${className}`.trim(), label);
+  node.type = "button";
+  node.disabled = disabled;
+  node.addEventListener("click", onClick);
+  return node;
+}
+function isBackendMessage(payload) {
+  return Boolean(payload && typeof payload === "object" && typeof payload.type === "string");
+}
+function levelRange(entry) {
+  if (entry.level === "chapter")
+    return `Chapter ${entry.orderStart}`;
+  const unit = entry.level === "arc" ? "Chapters" : "Chapter range";
+  return `${unit} ${entry.orderStart}–${entry.orderEnd}`;
+}
+function numberField(labelText, value, description, options = {}) {
+  const field = element("label", "summaryplus-field");
+  field.appendChild(element("span", "summaryplus-label", labelText));
+  const input = element("input", "summaryplus-input");
+  input.type = "number";
+  input.value = String(value);
+  if (options.min !== undefined)
+    input.min = String(options.min);
+  if (options.step !== undefined)
+    input.step = String(options.step);
+  field.append(input, element("small", "", description));
+  return { field, input };
+}
+function setup(ctx) {
+  const removeStyle = ctx.dom.addStyle(STYLES);
+  const tab = ctx.ui.registerDrawerTab({
+    id: "summaryplus",
+    title: "SummaryPlus",
+    shortName: "Summary+",
+    headerTitle: "SummaryPlus",
+    description: "Create and edit Chapter, Arc, and Volume summaries.",
+    keywords: ["summary", "memory", "chapter", "arc", "volume"],
+    iconSvg: ICON
+  });
+  const root = element("div", "summaryplus-root");
+  tab.root.replaceChildren(root);
+  let snapshot = null;
+  let screen = "summary";
+  let filter = "all";
+  let promptLevel = "chapter";
+  let notice = null;
+  let pendingNotice = null;
+  let draftChatId = null;
+  const entryDrafts = new Map;
+  const promptDrafts = new Map;
+  const send = (payload, waitingLabel) => {
+    if (waitingLabel) {
+      pendingNotice = waitingLabel;
+      notice = null;
+      render();
+    }
+    ctx.sendToBackend(payload);
+  };
+  const setScreen = (next) => {
+    screen = next;
+    notice = null;
+    render();
+  };
+  const syncDrafts = (next) => {
+    if (draftChatId !== next.chatId) {
+      entryDrafts.clear();
+      draftChatId = next.chatId;
+    }
+    if (next.state) {
+      const activeIds = new Set;
+      for (const entry of activeEntries(next.state)) {
+        activeIds.add(entry.id);
+        if (!entryDrafts.has(entry.id))
+          entryDrafts.set(entry.id, entry.content);
+      }
+      for (const key of entryDrafts.keys()) {
+        if (!activeIds.has(key))
+          entryDrafts.delete(key);
+      }
+    }
+    for (const prompt of next.prompts) {
+      if (!promptDrafts.has(prompt.id)) {
+        promptDrafts.set(prompt.id, {
+          name: prompt.name,
+          systemPrompt: prompt.systemPrompt,
+          userPrompt: prompt.userPrompt
+        });
+      }
+    }
+    const currentPromptIds = new Set(next.prompts.map((prompt) => prompt.id));
+    for (const key of promptDrafts.keys()) {
+      if (!currentPromptIds.has(key))
+        promptDrafts.delete(key);
+    }
+  };
+  const renderNav = () => {
+    const nav = element("nav", "summaryplus-nav");
+    const summary = element("button", screen === "summary" ? "is-active" : "", "Summary");
+    const settings = element("button", screen === "settings" ? "is-active" : "", "Settings");
+    summary.type = "button";
+    settings.type = "button";
+    summary.addEventListener("click", () => setScreen("summary"));
+    settings.addEventListener("click", () => setScreen("settings"));
+    nav.append(summary, settings);
+    return nav;
+  };
+  const renderNotice = () => {
+    if (pendingNotice)
+      return element("div", "summaryplus-banner", pendingNotice);
+    if (!notice)
+      return null;
+    return element("div", `summaryplus-banner is-${notice.kind}`, notice.text);
+  };
+  const renderSummary = (data) => {
+    const content = element("main", "summaryplus-content");
+    const hero = element("div", "summaryplus-hero");
+    const intro = element("div");
+    intro.append(element("div", "summaryplus-eyebrow", "Story memory"), element("h2", "summaryplus-title", "Active summary"), element("div", "summaryplus-copy", "Oldest to newest, ready for your prompt macros."));
+    hero.appendChild(intro);
+    content.appendChild(hero);
+    const noticeNode = renderNotice();
+    if (noticeNode)
+      content.appendChild(noticeNode);
+    if (!data.chatId || !data.state) {
+      const empty = element("div", "summaryplus-empty");
+      empty.append(element("strong", "", "No chat is open"), element("div", "summaryplus-help", "Open a roleplay chat to view or create its summaries."));
+      content.appendChild(empty);
+      return content;
+    }
+    const stats = element("div", "summaryplus-stats");
+    const statData = [
+      ["Pending", data.pendingMessageCount],
+      ["Chapters", data.activeCounts.chapter],
+      ["Arcs", data.activeCounts.arc],
+      ["Volumes", data.activeCounts.volume]
+    ];
+    for (const [label, value] of statData) {
+      const stat = element("div", "summaryplus-stat");
+      stat.append(element("strong", "", String(value)), element("span", "", label));
+      stats.appendChild(stat);
+    }
+    content.appendChild(stats);
+    if (!data.state.historyApproved) {
+      const warning = element("div", "summaryplus-banner is-warning");
+      warning.append(element("strong", "", "Existing chat detected. "), document.createTextNode("Automation is paused until you approve catch-up. The complete eligible history will be processed in chronological batches."));
+      content.append(warning, button("Process history & enable", () => send({ type: "process_history" }, "Starting history catch-up…"), "is-primary", data.processing));
+      return content;
+    }
+    if (data.state.lastError) {
+      const failedLevel = LEVEL_LABEL[data.state.lastError.level];
+      const error = element("div", "summaryplus-banner is-error", `${failedLevel} generation failed after all attempts: ${data.state.lastError.message}`);
+      content.appendChild(error);
+    }
+    const toolbar = element("div", "summaryplus-toolbar is-split");
+    const filters = element("div", "summaryplus-toolbar");
+    const filterOptions = [
+      ["all", "All"],
+      ["volume", "Volumes"],
+      ["arc", "Arcs"],
+      ["chapter", "Chapters"]
+    ];
+    for (const [value, label] of filterOptions) {
+      const pill = element("button", `summaryplus-pill ${filter === value ? "is-active" : ""}`, label);
+      pill.type = "button";
+      pill.addEventListener("click", () => {
+        filter = value;
+        render();
+      });
+      filters.appendChild(pill);
+    }
+    const processButton = button(data.processing ? "Processing…" : "Process now", () => send({ type: "process_now" }, "Checking eligible batches…"), "is-quiet", data.processing);
+    toolbar.append(filters, processButton);
+    content.appendChild(toolbar);
+    const entries = activeEntries(data.state, filter === "all" ? undefined : filter);
+    if (!entries.length) {
+      const empty = element("div", "summaryplus-empty");
+      empty.append(element("strong", "", filter === "all" ? "No active summaries yet" : `No active ${filter} summaries`), element("div", "summaryplus-help", "SummaryPlus will create one when enough source items and delay items are available."));
+      content.appendChild(empty);
+    } else {
+      const stack = element("div", "summaryplus-stack");
+      for (const entry of entries) {
+        const article = element("article", "summaryplus-entry");
+        const head = element("div", "summaryplus-entry-head");
+        head.append(element("span", "summaryplus-entry-label", LEVEL_LABEL[entry.level]), element("span", "summaryplus-entry-meta", levelRange(entry)));
+        const textarea = element("textarea", "summaryplus-textarea");
+        textarea.value = entryDrafts.get(entry.id) ?? entry.content;
+        textarea.disabled = data.processing;
+        textarea.setAttribute("aria-label", `${LEVEL_LABEL[entry.level]} summary`);
+        textarea.addEventListener("input", () => entryDrafts.set(entry.id, textarea.value));
+        article.append(head, textarea);
+        stack.appendChild(article);
+      }
+      content.appendChild(stack);
+      const actions = element("div", "summaryplus-actions");
+      actions.appendChild(button("Save summary changes", () => {
+        const edits = activeEntries(data.state).map((entry) => ({
+          id: entry.id,
+          content: entryDrafts.get(entry.id) ?? entry.content
+        }));
+        send({ type: "save_entries", entries: edits }, "Saving summary changes…");
+      }, "is-primary", data.processing));
+      if (data.processing) {
+        actions.appendChild(button("Cancel", () => send({ type: "cancel_processing" }, "Cancelling after the current request…")));
+      }
+      content.appendChild(actions);
+    }
+    if (data.processing && !entries.length) {
+      content.appendChild(button("Cancel processing", () => send({ type: "cancel_processing" }, "Cancelling after the current request…")));
+    }
+    return content;
+  };
+  const renderSettings = (data) => {
+    const content = element("main", "summaryplus-content");
+    const intro = element("div");
+    intro.append(element("div", "summaryplus-eyebrow", "Configuration"), element("h2", "summaryplus-title", "Summary engine"), element("div", "summaryplus-copy", "Changes apply only to source items that have not been summarized yet."));
+    content.appendChild(intro);
+    const noticeNode = renderNotice();
+    if (noticeNode)
+      content.appendChild(noticeNode);
+    const settings = data.settings;
+    const automationSection = element("section", "summaryplus-section");
+    const automationRow = element("label", "summaryplus-switch");
+    const automationText = element("div");
+    automationText.append(element("div", "summaryplus-label", "Automatic processing"), element("div", "summaryplus-help", "Run eligible batches when a new persisted chat message arrives."));
+    const automation = element("input");
+    automation.type = "checkbox";
+    automation.checked = settings.automationEnabled;
+    automationRow.append(automationText, automation);
+    automationSection.appendChild(automationRow);
+    const batchingSection = element("section", "summaryplus-section");
+    batchingSection.appendChild(element("h3", "summaryplus-section-title", "Counting & promotion"));
+    const batchingGrid = element("div", "summaryplus-grid");
+    const messagesPerChapter = numberField("Messages per Chapter", settings.messagesPerChapter, "Oldest consecutive pending messages consumed per Chapter.", { min: 1, step: 1 });
+    const messageDelay = numberField("Message delay", settings.messageDelay, "Recent messages kept completely outside the next Chapter.", { min: 0, step: 1 });
+    const chaptersPerArc = numberField("Chapters per Arc", settings.chaptersPerArc, "Oldest active Chapters consumed per Arc.", { min: 1, step: 1 });
+    const chapterDelay = numberField("Chapter delay", settings.chapterDelay, "Recent Chapters kept outside the next Arc.", { min: 0, step: 1 });
+    const arcsPerVolume = numberField("Arcs per Volume", settings.arcsPerVolume, "Oldest active Arcs consumed per Volume.", { min: 1, step: 1 });
+    const arcDelay = numberField("Arc delay", settings.arcDelay, "Recent Arcs kept outside the next Volume.", { min: 0, step: 1 });
+    batchingGrid.append(messagesPerChapter.field, messageDelay.field, chaptersPerArc.field, chapterDelay.field, arcsPerVolume.field, arcDelay.field);
+    batchingSection.appendChild(batchingGrid);
+    const modelSection = element("section", "summaryplus-section");
+    modelSection.appendChild(element("h3", "summaryplus-section-title", "Connection & generation"));
+    const modelGrid = element("div", "summaryplus-grid");
+    const connectionField = element("label", "summaryplus-field is-wide");
+    connectionField.appendChild(element("span", "summaryplus-label", "Connection"));
+    const connection = element("select", "summaryplus-select");
+    const defaultOption = element("option", "", "Default Lumiverse connection");
+    defaultOption.value = "";
+    connection.appendChild(defaultOption);
+    let selectedConnectionExists = settings.connectionId === null;
+    for (const item of data.connections) {
+      const details = [item.provider, item.model].filter(Boolean).join(" · ");
+      const option = element("option", "", details ? `${item.name} — ${details}` : item.name);
+      option.value = item.id;
+      if (item.id === settings.connectionId)
+        selectedConnectionExists = true;
+      connection.appendChild(option);
+    }
+    if (settings.connectionId && !selectedConnectionExists) {
+      const unavailable = element("option", "", "Previously selected connection (unavailable)");
+      unavailable.value = settings.connectionId;
+      connection.appendChild(unavailable);
+    }
+    connection.value = settings.connectionId ?? "";
+    connectionField.append(connection, element("small", "", "One connection is shared by Chapter, Arc, and Volume generation."));
+    const temperature = numberField("Temperature", settings.temperature, "Lower values favor consistency.", { min: 0, step: 0.1 });
+    const topP = numberField("Top P", settings.topP, "Nucleus sampling probability.", { min: 0, step: 0.05 });
+    topP.input.max = "1";
+    const maxTokens = numberField("Maximum response tokens", settings.maxTokens, "Upper response limit for every summary level.", { min: 1, step: 1 });
+    const retries = numberField("Retries", settings.retries, "Additional attempts after the first call. No extension-defined maximum.", { min: 0, step: 1 });
+    modelGrid.append(connectionField, temperature.field, topP.field, maxTokens.field, retries.field);
+    modelSection.appendChild(modelGrid);
+    const readNumber = (input, fallback) => Number.isFinite(input.valueAsNumber) ? input.valueAsNumber : fallback;
+    const saveSettingsButton = button("Save settings", () => {
+      send({
+        type: "save_settings",
+        settings: {
+          automationEnabled: automation.checked,
+          messagesPerChapter: readNumber(messagesPerChapter.input, settings.messagesPerChapter),
+          messageDelay: readNumber(messageDelay.input, settings.messageDelay),
+          chaptersPerArc: readNumber(chaptersPerArc.input, settings.chaptersPerArc),
+          chapterDelay: readNumber(chapterDelay.input, settings.chapterDelay),
+          arcsPerVolume: readNumber(arcsPerVolume.input, settings.arcsPerVolume),
+          arcDelay: readNumber(arcDelay.input, settings.arcDelay),
+          retries: readNumber(retries.input, settings.retries),
+          connectionId: connection.value || null,
+          temperature: readNumber(temperature.input, settings.temperature),
+          topP: readNumber(topP.input, settings.topP),
+          maxTokens: readNumber(maxTokens.input, settings.maxTokens)
+        }
+      }, "Saving settings…");
+    }, "is-primary");
+    const promptSection = element("section", "summaryplus-section");
+    promptSection.append(element("h3", "summaryplus-section-title", "Prompts"), element("div", "summaryplus-help", `Each level has its own System and User prompt. ${INPUT_PLACEHOLDER} is private to generation and receives chat messages, Chapters, or Arcs according to the level.`));
+    const levelToolbar = element("div", "summaryplus-toolbar");
+    for (const level of LEVELS) {
+      const levelButton = element("button", `summaryplus-pill ${promptLevel === level ? "is-active" : ""}`, LEVEL_LABEL[level]);
+      levelButton.type = "button";
+      levelButton.addEventListener("click", () => {
+        promptLevel = level;
+        render();
+      });
+      levelToolbar.appendChild(levelButton);
+    }
+    promptSection.appendChild(levelToolbar);
+    const promptsForLevel = data.prompts.filter((prompt) => prompt.level === promptLevel);
+    const activePromptId = settings.activePromptIds[promptLevel];
+    const selected = promptsForLevel.find((prompt) => prompt.id === activePromptId) ?? promptsForLevel[0];
+    if (selected) {
+      const promptHead = element("div", "summaryplus-prompt-head");
+      const promptSelect = element("select", "summaryplus-select");
+      for (const prompt of promptsForLevel) {
+        const option = element("option", "", prompt.name);
+        option.value = prompt.id;
+        promptSelect.appendChild(option);
+      }
+      promptSelect.value = selected.id;
+      promptSelect.addEventListener("change", () => {
+        send({
+          type: "select_prompt",
+          level: promptLevel,
+          promptId: promptSelect.value
+        }, "Selecting prompt…");
+      });
+      promptHead.append(promptSelect, button("New", () => send({ type: "new_prompt", level: promptLevel }, "Creating prompt…"), "is-quiet"));
+      promptSection.appendChild(promptHead);
+      const promptActions = element("div", "summaryplus-actions");
+      promptActions.appendChild(button("Duplicate", () => send({ type: "duplicate_prompt", promptId: selected.id }, "Duplicating prompt…")));
+      if (!selected.builtIn) {
+        promptActions.appendChild(button("Delete", async () => {
+          const result = await ctx.ui.showConfirm({
+            title: "Delete prompt",
+            message: `Delete “${selected.name}”? This cannot be undone.`,
+            variant: "danger",
+            confirmLabel: "Delete"
+          });
+          if (result.confirmed) {
+            promptDrafts.delete(selected.id);
+            send({ type: "delete_prompt", promptId: selected.id }, "Deleting prompt…");
+          }
+        }, "is-danger"));
+      }
+      promptSection.appendChild(promptActions);
+      if (selected.builtIn) {
+        promptSection.append(element("span", "summaryplus-builtin", "Protected default"), element("div", "summaryplus-help", "Default prompts are read-only. Duplicate this prompt to create an editable copy."));
+      }
+      const draft = promptDrafts.get(selected.id) ?? {
+        name: selected.name,
+        systemPrompt: selected.systemPrompt,
+        userPrompt: selected.userPrompt
+      };
+      const nameField = element("label", "summaryplus-field");
+      nameField.appendChild(element("span", "summaryplus-label", "Name"));
+      const promptName = element("input", "summaryplus-input");
+      promptName.value = draft.name;
+      promptName.readOnly = selected.builtIn;
+      nameField.appendChild(promptName);
+      const systemField = element("label", "summaryplus-field");
+      systemField.appendChild(element("span", "summaryplus-label", "System prompt"));
+      const systemPrompt = element("textarea", "summaryplus-textarea");
+      systemPrompt.value = draft.systemPrompt;
+      systemPrompt.readOnly = selected.builtIn;
+      systemPrompt.rows = 8;
+      systemField.appendChild(systemPrompt);
+      const userField = element("label", "summaryplus-field");
+      userField.appendChild(element("span", "summaryplus-label", "User prompt"));
+      const userPrompt = element("textarea", "summaryplus-textarea");
+      userPrompt.value = draft.userPrompt;
+      userPrompt.readOnly = selected.builtIn;
+      userPrompt.rows = 5;
+      const placeholderStatus = element("div", "summaryplus-placeholder-status");
+      const updatePlaceholderStatus = () => {
+        const valid = userPrompt.value.includes(INPUT_PLACEHOLDER);
+        placeholderStatus.className = `summaryplus-placeholder-status is-${valid ? "valid" : "invalid"}`;
+        placeholderStatus.textContent = valid ? `${INPUT_PLACEHOLDER} is present.` : `${INPUT_PLACEHOLDER} is required before generation.`;
+      };
+      updatePlaceholderStatus();
+      userField.append(userPrompt, placeholderStatus);
+      const updatePromptDraft = () => {
+        promptDrafts.set(selected.id, {
+          name: promptName.value,
+          systemPrompt: systemPrompt.value,
+          userPrompt: userPrompt.value
+        });
+      };
+      promptName.addEventListener("input", updatePromptDraft);
+      systemPrompt.addEventListener("input", updatePromptDraft);
+      userPrompt.addEventListener("input", () => {
+        updatePromptDraft();
+        updatePlaceholderStatus();
+      });
+      promptSection.append(nameField, systemField, userField);
+      if (!selected.builtIn) {
+        promptSection.appendChild(button("Save prompt", () => {
+          updatePromptDraft();
+          send({
+            type: "save_prompt",
+            prompt: {
+              id: selected.id,
+              name: promptName.value,
+              systemPrompt: systemPrompt.value,
+              userPrompt: userPrompt.value
+            }
+          }, "Saving prompt…");
+        }, "is-primary"));
+      }
+    }
+    content.append(automationSection, batchingSection, modelSection, saveSettingsButton, promptSection);
+    return content;
+  };
+  function render() {
+    const shell = element("div", "summaryplus-shell");
+    shell.appendChild(renderNav());
+    if (!snapshot) {
+      const loading = element("div", "summaryplus-loading");
+      loading.append(element("span", "summaryplus-dot"), document.createTextNode("Loading SummaryPlus…"));
+      shell.appendChild(loading);
+    } else {
+      shell.appendChild(screen === "summary" ? renderSummary(snapshot) : renderSettings(snapshot));
+    }
+    root.replaceChildren(shell);
+  }
+  const unsubscribeBackend = ctx.onBackendMessage((payload) => {
+    if (!isBackendMessage(payload))
+      return;
+    if (payload.type === "action_error") {
+      pendingNotice = null;
+      notice = { text: payload.message, kind: "error" };
+      render();
+      return;
+    }
+    syncDrafts(payload.snapshot);
+    snapshot = payload.snapshot;
+    if (pendingNotice) {
+      notice = { text: pendingNotice.replace(/…$/, "") + " complete.", kind: "success" };
+      pendingNotice = null;
+    }
+    render();
+  });
+  const unsubscribeActivate = tab.onActivate(() => send({ type: "request_snapshot" }));
+  const unsubscribeChatSwitch = ctx.events.on("CHAT_SWITCHED", () => {
+    entryDrafts.clear();
+    draftChatId = null;
+    send({ type: "request_snapshot" });
+  });
+  render();
+  ctx.ready();
+  send({ type: "request_snapshot" });
+  return () => {
+    unsubscribeChatSwitch();
+    unsubscribeActivate();
+    unsubscribeBackend();
+    tab.destroy();
+    removeStyle();
+    ctx.dom.cleanup();
+  };
+}
+export {
+  setup
+};
