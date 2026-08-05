@@ -209,18 +209,21 @@ async function publishSnapshot(userId?: string): Promise<void> {
       snapshot: await createSnapshot(userId),
     }, userId)
   } catch (error) {
-    spindle.sendToFrontend({
-      type: 'action_error',
-      message: errorMessage(error),
-    }, userId)
+    publishActionError(error, userId)
   }
 }
 
 function publishActionError(error: unknown, userId?: string): void {
+  const message = errorMessage(error)
+  spindle.toast.error(message, { userId })
   spindle.sendToFrontend({
     type: 'action_error',
-    message: errorMessage(error),
+    message,
   }, userId)
+}
+
+function publishActionSuccess(message: string, userId?: string): void {
+  spindle.toast.success(message, { userId })
 }
 
 function waitBeforeRetry(signal: AbortSignal): Promise<void> {
@@ -307,14 +310,18 @@ async function recordFailure(
   chatId: string,
   level: SummaryLevel,
   error: unknown,
+  userId?: string,
 ): Promise<void> {
   const state = await ensureState(chatId)
+  const message = errorMessage(error)
   state.lastError = {
     level,
-    message: errorMessage(error),
+    message,
     at: now(),
   }
   await saveState(chatId, state)
+  const label = `${level[0].toUpperCase()}${level.slice(1)}`
+  spindle.toast.error(`${label} generation failed: ${message}`, { userId })
 }
 
 async function createChapter(
@@ -333,7 +340,7 @@ async function createChapter(
     content = await generateSummary('chapter', sourceText(batch), settings, signal, userId)
   } catch (error) {
     if (isAbort(error)) throw error
-    await recordFailure(chatId, 'chapter', error)
+    await recordFailure(chatId, 'chapter', error, userId)
     throw error
   }
 
@@ -395,7 +402,7 @@ async function createPromotion(
     content = await generateSummary(targetLevel, sourceText(batch), settings, signal, userId)
   } catch (error) {
     if (isAbort(error)) throw error
-    await recordFailure(chatId, targetLevel, error)
+    await recordFailure(chatId, targetLevel, error, userId)
     throw error
   }
 
@@ -733,6 +740,7 @@ async function handleFrontendRequest(payload: FrontendRequest, userId: string): 
       if (!chatId) throw new Error('Open a chat before editing summaries.')
       if (!Array.isArray(payload.entries)) throw new Error('Invalid summary edits.')
       await saveEntryEdits(chatId, payload.entries)
+      publishActionSuccess('Summary changes saved.', userId)
       await publishSnapshot(userId)
       return
     case 'save_settings':
@@ -744,19 +752,23 @@ async function handleFrontendRequest(payload: FrontendRequest, userId: string): 
       return
     case 'save_prompt':
       await saveCustomPrompt(payload.prompt, userId)
+      publishActionSuccess('Prompt saved.', userId)
       await publishSnapshot(userId)
       return
     case 'new_prompt':
       if (!isSummaryLevel(payload.level)) throw new Error('Invalid prompt level.')
       await createCustomPrompt(payload.level, userId)
+      publishActionSuccess('Prompt created.', userId)
       await publishSnapshot(userId)
       return
     case 'duplicate_prompt':
       await duplicatePrompt(payload.promptId, userId)
+      publishActionSuccess('Prompt duplicated.', userId)
       await publishSnapshot(userId)
       return
     case 'delete_prompt':
       await deletePrompt(payload.promptId, userId)
+      publishActionSuccess('Prompt deleted.', userId)
       await publishSnapshot(userId)
       return
     case 'select_prompt':

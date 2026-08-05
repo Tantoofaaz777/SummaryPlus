@@ -3,6 +3,7 @@ import {
   INPUT_PLACEHOLDER,
   LEVELS,
   activeEntries,
+  createDefaultSettings,
   type PromptDefinition,
   type Snapshot,
   type SummaryEntry,
@@ -106,7 +107,6 @@ const STYLES = `
 .summaryplus-banner { padding: 11px 12px; border: 1px solid var(--sp-border); border-radius: 11px; background: var(--sp-surface); font-size: 12px; line-height: 1.5; }
 .summaryplus-banner.is-warning { border-color: color-mix(in srgb, #e6ad43 46%, transparent); background: color-mix(in srgb, #e6ad43 10%, transparent); }
 .summaryplus-banner.is-error { border-color: color-mix(in srgb, #e16464 48%, transparent); background: color-mix(in srgb, #e16464 10%, transparent); }
-.summaryplus-banner.is-success { border-color: color-mix(in srgb, #59b889 44%, transparent); background: color-mix(in srgb, #59b889 9%, transparent); }
 .summaryplus-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
 .summaryplus-toolbar.is-split { justify-content: space-between; }
 .summaryplus-toolbar-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-left: auto; }
@@ -197,6 +197,7 @@ const STYLES = `
 }
 .summaryplus-textarea { min-height: 112px; resize: vertical; padding: 10px; line-height: 1.55; }
 .summaryplus-input, .summaryplus-select { height: 36px; padding: 0 9px; }
+.summaryplus-input::placeholder { color: var(--lumiverse-text-hint, var(--sp-muted)); opacity: 1; }
 .summaryplus-textarea:read-only, .summaryplus-input:read-only { opacity: .72; cursor: default; }
 .summaryplus-empty { padding: 30px 18px; border: 1px dashed var(--sp-border); border-radius: 12px; text-align: center; }
 .summaryplus-empty strong { display: block; margin-bottom: 5px; font-size: 13px; }
@@ -264,13 +265,16 @@ function numberField(
   labelText: string,
   value: number,
   description: string,
-  options: { min?: number; step?: number } = {},
+  options: { min?: number; step?: number; defaultValue?: number } = {},
 ): { field: HTMLLabelElement; input: HTMLInputElement } {
   const field = element('label', 'summaryplus-field')
   field.appendChild(element('span', 'summaryplus-label', labelText))
   const input = element('input', 'summaryplus-input')
   input.type = 'number'
-  input.value = String(value)
+  input.value = options.defaultValue !== undefined && value === options.defaultValue
+    ? ''
+    : String(value)
+  if (options.defaultValue !== undefined) input.placeholder = String(options.defaultValue)
   if (options.min !== undefined) input.min = String(options.min)
   if (options.step !== undefined) input.step = String(options.step)
   field.append(input, element('small', '', description))
@@ -296,25 +300,15 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   let screen: Screen = 'summary'
   let filter: SummaryFilter = 'all'
   let promptLevel: SummaryLevel = 'chapter'
-  let notice: { text: string; kind: 'error' | 'success' } | null = null
-  let pendingNotice: string | null = null
   let editingEntryId: string | null = null
   let draftChatId: string | null = null
   const entryDrafts = new Map<string, string>()
   const promptDrafts = new Map<string, Pick<PromptDefinition, 'name' | 'systemPrompt' | 'userPrompt'>>()
 
-  const send = (payload: unknown, waitingLabel?: string) => {
-    if (waitingLabel) {
-      pendingNotice = waitingLabel
-      notice = null
-      render()
-    }
-    ctx.sendToBackend(payload)
-  }
+  const send = (payload: unknown) => ctx.sendToBackend(payload)
 
   const setScreen = (next: Screen, focusTab = false) => {
     screen = next
-    notice = null
     render()
     if (focusTab) {
       queueMicrotask(() => root.querySelector<HTMLButtonElement>(`#summaryplus-tab-${next}`)?.focus())
@@ -388,16 +382,6 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     return nav
   }
 
-  const renderNotice = (): HTMLElement | null => {
-    if (pendingNotice) return element('div', 'summaryplus-banner', pendingNotice)
-    if (!notice) return null
-    return element(
-      'div',
-      `summaryplus-banner is-${notice.kind}`,
-      notice.text,
-    )
-  }
-
   const renderSummary = (data: Snapshot): HTMLElement => {
     const content = element('main', 'summaryplus-content')
     content.id = 'summaryplus-tabpanel'
@@ -412,9 +396,6 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     )
     hero.appendChild(intro)
     content.appendChild(hero)
-
-    const noticeNode = renderNotice()
-    if (noticeNode) content.appendChild(noticeNode)
 
     if (!data.chatId || !data.state) {
       const empty = element('div', 'summaryplus-empty')
@@ -452,7 +433,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         warning,
         button(
           'Process history & enable',
-          () => send({ type: 'process_history' }, 'Starting history catch-up…'),
+          () => send({ type: 'process_history' }),
           'is-primary',
           data.processing,
         ),
@@ -501,7 +482,6 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       'Flush changes',
       () => {
         entryDrafts.clear()
-        notice = null
         render()
       },
       'is-quiet is-tint-danger',
@@ -509,16 +489,13 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     )
     const saveButton = button(
       'Save changes',
-      () => send(
-        { type: 'save_entries', entries: pendingEdits },
-        'Saving summary changes…',
-      ),
+      () => send({ type: 'save_entries', entries: pendingEdits }),
       'is-quiet is-tint-success',
       data.processing || editingEntryId !== null || !hasPendingChanges,
     )
     const processButton = button(
       data.processing ? 'Processing…' : 'Process now',
-      () => send({ type: 'process_now' }, 'Checking eligible batches…'),
+      () => send({ type: 'process_now' }),
       'is-quiet',
       data.processing || editingEntryId !== null || hasPendingChanges,
     )
@@ -562,7 +539,6 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         )
         card.addEventListener('click', () => {
           editingEntryId = entry.id
-          notice = null
           render()
           ctx.sendToBackend({
             type: 'edit_entry',
@@ -578,7 +554,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         const actions = element('div', 'summaryplus-actions')
         actions.appendChild(button(
           'Cancel',
-          () => send({ type: 'cancel_processing' }, 'Cancelling after the current request…'),
+          () => send({ type: 'cancel_processing' }),
         ))
         content.appendChild(actions)
       }
@@ -587,7 +563,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     if (data.processing && !entries.length) {
       content.appendChild(button(
         'Cancel processing',
-        () => send({ type: 'cancel_processing' }, 'Cancelling after the current request…'),
+        () => send({ type: 'cancel_processing' }),
       ))
     }
     return content
@@ -609,9 +585,6 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       ),
     )
     content.appendChild(intro)
-
-    const noticeNode = renderNotice()
-    if (noticeNode) content.appendChild(noticeNode)
 
     const settings = data.settings
     const promptSection = element('section', 'summaryplus-section')
@@ -657,18 +630,18 @@ export function setup(ctx: SpindleFrontendContext): () => void {
           type: 'select_prompt',
           level: promptLevel,
           promptId: promptSelect.value,
-        }, 'Selecting prompt…')
+        })
       })
       promptHead.append(
         promptSelect,
         button(
           'New',
-          () => send({ type: 'new_prompt', level: promptLevel }, 'Creating prompt…'),
+          () => send({ type: 'new_prompt', level: promptLevel }),
           'is-quiet',
         ),
         button(
           'Duplicate',
-          () => send({ type: 'duplicate_prompt', promptId: selected.id }, 'Duplicating prompt…'),
+          () => send({ type: 'duplicate_prompt', promptId: selected.id }),
           'is-quiet',
         ),
       )
@@ -684,7 +657,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
             })
             if (result.confirmed) {
               promptDrafts.delete(selected.id)
-              send({ type: 'delete_prompt', promptId: selected.id }, 'Deleting prompt…')
+              send({ type: 'delete_prompt', promptId: selected.id })
             }
           },
           'is-quiet is-danger',
@@ -763,7 +736,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
               systemPrompt: systemPrompt.value,
               userPrompt: userPrompt.value,
             },
-          }, 'Saving prompt…')
+          })
         }, 'is-quiet is-tint-primary', !hasPromptChanges())
         promptSection.appendChild(savePromptButton)
       }
@@ -782,14 +755,16 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     intro.append(
       element('div', 'summaryplus-eyebrow', 'Configuration'),
       element('h2', 'summaryplus-title', 'Summary engine'),
-      element('div', 'summaryplus-copy', 'Changes apply only to source items that have not been summarized yet.'),
+      element(
+        'div',
+        'summaryplus-copy',
+        'Changes are applied automatically and affect only source items that have not been summarized yet.',
+      ),
     )
     content.appendChild(intro)
 
-    const noticeNode = renderNotice()
-    if (noticeNode) content.appendChild(noticeNode)
-
     const settings = data.settings
+    const defaults = createDefaultSettings()
     const automationSection = element('section', 'summaryplus-section')
     const automationRow = element('label', 'summaryplus-switch')
     const automationText = element('div')
@@ -804,43 +779,43 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     automationSection.appendChild(automationRow)
 
     const batchingSection = element('section', 'summaryplus-section')
-    batchingSection.appendChild(element('h3', 'summaryplus-section-title', 'Counting & promotion'))
+    batchingSection.appendChild(element('h3', 'summaryplus-section-title', 'Promotion'))
     const batchingGrid = element('div', 'summaryplus-grid')
     const messagesPerChapter = numberField(
       'Messages per Chapter',
       settings.messagesPerChapter,
       'Oldest consecutive pending messages consumed per Chapter.',
-      { min: 1, step: 1 },
+      { min: 1, step: 1, defaultValue: defaults.messagesPerChapter },
     )
     const messageDelay = numberField(
       'Message delay',
       settings.messageDelay,
       'Recent messages kept completely outside the next Chapter.',
-      { min: 0, step: 1 },
+      { min: 0, step: 1, defaultValue: defaults.messageDelay },
     )
     const chaptersPerArc = numberField(
       'Chapters per Arc',
       settings.chaptersPerArc,
       'Oldest active Chapters consumed per Arc.',
-      { min: 1, step: 1 },
+      { min: 1, step: 1, defaultValue: defaults.chaptersPerArc },
     )
     const chapterDelay = numberField(
       'Chapter delay',
       settings.chapterDelay,
       'Recent Chapters kept outside the next Arc.',
-      { min: 0, step: 1 },
+      { min: 0, step: 1, defaultValue: defaults.chapterDelay },
     )
     const arcsPerVolume = numberField(
       'Arcs per Volume',
       settings.arcsPerVolume,
       'Oldest active Arcs consumed per Volume.',
-      { min: 1, step: 1 },
+      { min: 1, step: 1, defaultValue: defaults.arcsPerVolume },
     )
     const arcDelay = numberField(
       'Arc delay',
       settings.arcDelay,
       'Recent Arcs kept outside the next Volume.',
-      { min: 0, step: 1 },
+      { min: 0, step: 1, defaultValue: defaults.arcDelay },
     )
     batchingGrid.append(
       messagesPerChapter.field,
@@ -853,7 +828,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     batchingSection.appendChild(batchingGrid)
 
     const modelSection = element('section', 'summaryplus-section')
-    modelSection.appendChild(element('h3', 'summaryplus-section-title', 'Connection & generation'))
+    modelSection.appendChild(element('h3', 'summaryplus-section-title', 'Generation'))
     const modelGrid = element('div', 'summaryplus-grid')
     const connectionField = element('label', 'summaryplus-field is-wide')
     connectionField.appendChild(element('span', 'summaryplus-label', 'Connection'))
@@ -883,26 +858,26 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       'Temperature',
       settings.temperature,
       'Lower values favor consistency.',
-      { min: 0, step: 0.1 },
+      { min: 0, step: 0.1, defaultValue: defaults.temperature },
     )
     const topP = numberField(
       'Top P',
       settings.topP,
       'Nucleus sampling probability.',
-      { min: 0, step: 0.05 },
+      { min: 0, step: 0.05, defaultValue: defaults.topP },
     )
     topP.input.max = '1'
     const maxTokens = numberField(
       'Maximum response tokens',
       settings.maxTokens,
       'Upper response limit for every summary level.',
-      { min: 1, step: 1 },
+      { min: 1, step: 1, defaultValue: defaults.maxTokens },
     )
     const retries = numberField(
       'Retries',
       settings.retries,
       'Additional attempts after the first call. No extension-defined maximum.',
-      { min: 0, step: 1 },
+      { min: 0, step: 1, defaultValue: defaults.retries },
     )
     modelGrid.append(
       connectionField,
@@ -916,31 +891,47 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     const readNumber = (input: HTMLInputElement, fallback: number) => (
       Number.isFinite(input.valueAsNumber) ? input.valueAsNumber : fallback
     )
-    const saveSettingsButton = button('Save settings', () => {
+    const applySettings = () => {
       send({
         type: 'save_settings',
         settings: {
           automationEnabled: automation.checked,
-          messagesPerChapter: readNumber(messagesPerChapter.input, settings.messagesPerChapter),
-          messageDelay: readNumber(messageDelay.input, settings.messageDelay),
-          chaptersPerArc: readNumber(chaptersPerArc.input, settings.chaptersPerArc),
-          chapterDelay: readNumber(chapterDelay.input, settings.chapterDelay),
-          arcsPerVolume: readNumber(arcsPerVolume.input, settings.arcsPerVolume),
-          arcDelay: readNumber(arcDelay.input, settings.arcDelay),
-          retries: readNumber(retries.input, settings.retries),
+          messagesPerChapter: readNumber(messagesPerChapter.input, defaults.messagesPerChapter),
+          messageDelay: readNumber(messageDelay.input, defaults.messageDelay),
+          chaptersPerArc: readNumber(chaptersPerArc.input, defaults.chaptersPerArc),
+          chapterDelay: readNumber(chapterDelay.input, defaults.chapterDelay),
+          arcsPerVolume: readNumber(arcsPerVolume.input, defaults.arcsPerVolume),
+          arcDelay: readNumber(arcDelay.input, defaults.arcDelay),
+          retries: readNumber(retries.input, defaults.retries),
           connectionId: connection.value || null,
-          temperature: readNumber(temperature.input, settings.temperature),
-          topP: readNumber(topP.input, settings.topP),
-          maxTokens: readNumber(maxTokens.input, settings.maxTokens),
+          temperature: readNumber(temperature.input, defaults.temperature),
+          topP: readNumber(topP.input, defaults.topP),
+          maxTokens: readNumber(maxTokens.input, defaults.maxTokens),
         },
-      }, 'Saving settings…')
-    }, 'is-primary')
+      })
+    }
+    const settingsControls: Array<HTMLInputElement | HTMLSelectElement> = [
+      automation,
+      messagesPerChapter.input,
+      messageDelay.input,
+      chaptersPerArc.input,
+      chapterDelay.input,
+      arcsPerVolume.input,
+      arcDelay.input,
+      connection,
+      temperature.input,
+      topP.input,
+      maxTokens.input,
+      retries.input,
+    ]
+    for (const control of settingsControls) {
+      control.addEventListener('change', applySettings)
+    }
 
     content.append(
       automationSection,
-      batchingSection,
       modelSection,
-      saveSettingsButton,
+      batchingSection,
     )
     return content
   }
@@ -967,8 +958,6 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     if (!isBackendMessage(payload)) return
     if (payload.type === 'action_error') {
       editingEntryId = null
-      pendingNotice = null
-      notice = { text: payload.message, kind: 'error' }
       render()
       return
     }
@@ -986,10 +975,6 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     }
     syncDrafts(payload.snapshot)
     snapshot = payload.snapshot
-    if (pendingNotice) {
-      notice = { text: pendingNotice.replace(/…$/, '') + ' complete.', kind: 'success' }
-      pendingNotice = null
-    }
     render()
   })
 
