@@ -741,7 +741,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     const nav = element('nav', 'summaryplus-nav')
     const tabs: Array<{ id: Screen; label: string }> = [
       { id: 'summary', label: 'Summary' },
-      { id: 'prompts', label: 'Prompt Library' },
+      { id: 'prompts', label: 'Prompts' },
       { id: 'settings', label: 'Settings' },
     ]
     nav.setAttribute('role', 'tablist')

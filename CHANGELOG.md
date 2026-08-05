@@ -18,3 +18,4 @@
 - Added opt-in automatic message trimming with a Chapter delay, ownership-safe unhiding, deletion restoration, and branch remapping.
 - Hid the dependent Trimming controls while automatic message hiding is disabled.
 - Centered all screen headers with wider vertical spacing and replaced the automation checkbox with a themed switch.
+- Shortened the Prompt Library navigation-tab label to Prompts.

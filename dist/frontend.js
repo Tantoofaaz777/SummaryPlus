@@ -2951,7 +2951,7 @@ function setup(ctx) {
     const nav = element("nav", "summaryplus-nav");
     const tabs = [
       { id: "summary", label: "Summary" },
-      { id: "prompts", label: "Prompt Library" },
+      { id: "prompts", label: "Prompts" },
       { id: "settings", label: "Settings" }
     ];
     nav.setAttribute("role", "tablist");
