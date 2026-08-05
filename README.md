@@ -77,6 +77,8 @@ When an Arc succeeds, its source Chapters become archived and disappear from the
 
 The Summary screen displays the combined active timeline and offers All, Volume, Arc, and Chapter filters. Every visible summary is editable. Saved edits become the authoritative source if that entry is later promoted.
 
+Only the most recent active entry can be regenerated or deleted. Regeneration reuses that entry's original messages, Chapters, or Arcs with the currently selected prompt and generation settings; optional context placeholders are resolved again from the current older timeline. The existing text is replaced only after a successful response, so cancellation, missing sources, or generation failure leaves it intact. Deletion works in the same newest-to-oldest order and releases the deleted entry's direct sources for processing again.
+
 ## Defaults
 
 | Setting | Default |

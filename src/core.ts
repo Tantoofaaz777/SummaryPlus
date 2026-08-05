@@ -442,6 +442,22 @@ export function sourceText(items: Array<{ content: string }>): string {
   return items.map((item) => item.content).join('\n\n')
 }
 
+export function orderedSourceItems<T extends { id: string | number }>(
+  sourceIds: string[],
+  candidates: T[],
+): T[] | null {
+  const candidatesById = new Map(
+    candidates.map((candidate) => [String(candidate.id), candidate]),
+  )
+  const ordered: T[] = []
+  for (const sourceId of sourceIds) {
+    const source = candidatesById.get(sourceId)
+    if (!source) return null
+    ordered.push(source)
+  }
+  return ordered
+}
+
 export interface DeleteEntryResult {
   level: SummaryLevel
   restoredSourceCount: number

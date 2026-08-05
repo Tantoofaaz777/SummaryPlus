@@ -8,6 +8,7 @@ import {
   hasValidContextPlaceholders,
   macroValue,
   normalizeSettings,
+  orderedSourceItems,
   pendingMessages,
   renderGenerationUserPrompt,
   restoreDeletedChapterSlot,
@@ -193,6 +194,28 @@ describe('generation context placeholder', () => {
     expect(hasValidContextPlaceholders('{{summaryPlusContext::-1}}')).toBe(false)
     expect(hasValidContextPlaceholders('{{summaryPlusContext::1.5}}')).toBe(false)
     expect(hasValidContextPlaceholders('{{summaryPlusContext::3')).toBe(false)
+  })
+})
+
+describe('original source lookup', () => {
+  test('restores sources in their recorded order', () => {
+    const candidates = [
+      { id: 'm3', content: 'three' },
+      { id: 'm1', content: 'one' },
+      { id: 'm2', content: 'two' },
+    ]
+
+    expect(orderedSourceItems(['m1', 'm2', 'm3'], candidates)?.map((item) => item.content))
+      .toEqual(['one', 'two', 'three'])
+  })
+
+  test('fails when any recorded source no longer exists', () => {
+    const candidates = [
+      { id: 'm1', content: 'one' },
+      { id: 'm3', content: 'three' },
+    ]
+
+    expect(orderedSourceItems(['m1', 'm2', 'm3'], candidates)).toBeNull()
   })
 })
 

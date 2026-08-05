@@ -41,6 +41,11 @@ const EXPAND_ICON = `
   <path d="M8.5 4.5h-4v4M15.5 4.5h4v4M19.5 15.5v4h-4M4.5 15.5v4h4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>`
 
+const REGENERATE_ICON = `
+<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <path d="M19.2 8.5A7.5 7.5 0 1 0 19 16M19.2 4.5v4h-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>`
+
 const DELETE_ICON = `
 <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
   <path d="M4.5 7h15M9.5 3.5h5L16 7H8l1.5-3.5ZM7 7l.75 13h8.5L17 7M10 10.5v6M14 10.5v6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
@@ -192,6 +197,15 @@ const STYLES = `
 }
 .summaryplus-entry-action:hover:not(:disabled) { color: var(--sp-accent); background: var(--sp-accent-soft); }
 .summaryplus-entry-action:active:not(:disabled) { transform: translateY(1px); }
+.summaryplus-entry-action.is-regenerate {
+  color: var(--lumiverse-primary-text, var(--lumiverse-primary, var(--sp-accent)));
+  border-color: var(--lumiverse-primary-050, var(--lumiverse-primary, var(--sp-accent)));
+  background: var(--lumiverse-primary-015, color-mix(in srgb, var(--sp-accent) 15%, transparent));
+}
+.summaryplus-entry-action.is-regenerate:hover:not(:disabled) {
+  color: var(--lumiverse-primary-text, var(--lumiverse-primary, var(--sp-accent)));
+  background: var(--lumiverse-primary-020, color-mix(in srgb, var(--sp-accent) 20%, transparent));
+}
 .summaryplus-entry-action.is-delete {
   color: var(--lumiverse-danger, #ef4444);
   border-color: var(--lumiverse-danger-050, rgba(239, 68, 68, .5));
@@ -209,7 +223,7 @@ const STYLES = `
   display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px;
 }
 .summaryplus-entry-icon svg { display: block; width: 100%; height: 100%; }
-.summaryplus-entry.has-pending-change .summaryplus-entry-action:not(.is-delete) {
+.summaryplus-entry.has-pending-change .summaryplus-entry-action:not(.is-delete):not(.is-regenerate) {
   color: var(--lumiverse-success, #22c55e);
 }
 .summaryplus-textarea, .summaryplus-input, .summaryplus-select {
@@ -295,6 +309,10 @@ function deleteEntryMessage(entry: SummaryEntry): string {
   return `Delete ${entryTitle(entry)}? Its summary text will be permanently deleted and its ${entry.sourceIds.length} source ${sourceLabel} will be restored.`
 }
 
+function regenerateEntryMessage(entry: SummaryEntry): string {
+  return `Regenerate ${entryTitle(entry)} from its original sources using the current prompt and generation settings? The existing summary will be replaced only if generation succeeds.`
+}
+
 function numberField(
   labelText: string,
   value: number,
@@ -334,6 +352,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   let filter: SummaryFilter = 'all'
   let promptLevel: SummaryLevel = 'chapter'
   let editingEntryId: string | null = null
+  let regeneratingEntryId: string | null = null
   let deletingEntryId: string | null = null
   let draftChatId: string | null = null
   const entryDrafts = new Map<string, string>()
@@ -352,11 +371,13 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   const syncDrafts = (next: Snapshot) => {
     if (draftChatId !== next.chatId) {
       entryDrafts.clear()
+      regeneratingEntryId = null
       deletingEntryId = null
       draftChatId = next.chatId
     }
     if (!next.state) {
       entryDrafts.clear()
+      regeneratingEntryId = null
       deletingEntryId = null
     } else {
       const activeById = new Map(activeEntries(next.state).map((entry) => [entry.id, entry]))
@@ -364,6 +385,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         const entry = activeById.get(entryId)
         if (!entry || entry.content === draft) entryDrafts.delete(entryId)
       }
+      if (regeneratingEntryId && !next.processing) regeneratingEntryId = null
       if (deletingEntryId && !activeById.has(deletingEntryId)) deletingEntryId = null
     }
     for (const prompt of next.prompts) {
@@ -522,19 +544,31 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         render()
       },
       'is-quiet is-tint-danger',
-      data.processing || editingEntryId !== null || deletingEntryId !== null || !hasPendingChanges,
+      data.processing
+        || editingEntryId !== null
+        || regeneratingEntryId !== null
+        || deletingEntryId !== null
+        || !hasPendingChanges,
     )
     const saveButton = button(
       'Save changes',
       () => send({ type: 'save_entries', entries: pendingEdits }),
       'is-quiet is-tint-success',
-      data.processing || editingEntryId !== null || deletingEntryId !== null || !hasPendingChanges,
+      data.processing
+        || editingEntryId !== null
+        || regeneratingEntryId !== null
+        || deletingEntryId !== null
+        || !hasPendingChanges,
     )
     const processButton = button(
       data.processing ? 'Processing…' : 'Process now',
       () => send({ type: 'process_now' }),
       'is-quiet',
-      data.processing || editingEntryId !== null || deletingEntryId !== null || hasPendingChanges,
+      data.processing
+        || editingEntryId !== null
+        || regeneratingEntryId !== null
+        || deletingEntryId !== null
+        || hasPendingChanges,
     )
     toolbarActions.append(flushButton, saveButton, processButton)
     toolbar.append(filters, toolbarActions)
@@ -563,6 +597,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         const hasPendingChange = draft !== undefined && draft !== entry.content
         const controlsDisabled = data.processing
           || editingEntryId !== null
+          || regeneratingEntryId !== null
           || deletingEntryId !== null
         const card = element(
           'div',
@@ -591,6 +626,40 @@ export function setup(ctx: SpindleFrontendContext): () => void {
 
         const actions = element('div', 'summaryplus-entry-actions')
         if (entry.id === latestEntryId) {
+          const regenerateButton = element('button', 'summaryplus-entry-action is-regenerate')
+          regenerateButton.type = 'button'
+          regenerateButton.disabled = controlsDisabled
+          regenerateButton.title = `Regenerate ${title}`
+          regenerateButton.setAttribute('aria-label', `Regenerate ${title}`)
+          const regenerateIcon = element('span', 'summaryplus-entry-icon')
+          regenerateIcon.innerHTML = REGENERATE_ICON
+          regenerateButton.appendChild(regenerateIcon)
+          regenerateButton.addEventListener('click', async () => {
+            regeneratingEntryId = entry.id
+            render()
+            let result: Awaited<ReturnType<typeof ctx.ui.showConfirm>>
+            try {
+              result = await ctx.ui.showConfirm({
+                title: `Regenerate ${LEVEL_LABEL[entry.level]}`,
+                message: regenerateEntryMessage(entry),
+                variant: 'info',
+                confirmLabel: 'Regenerate',
+              })
+            } catch {
+              regeneratingEntryId = null
+              render()
+              return
+            }
+            if (!result.confirmed) {
+              regeneratingEntryId = null
+              render()
+              return
+            }
+            entryDrafts.delete(entry.id)
+            send({ type: 'regenerate_entry', entryId: entry.id })
+          })
+          actions.appendChild(regenerateButton)
+
           const deleteButton = element('button', 'summaryplus-entry-action is-delete')
           deleteButton.type = 'button'
           deleteButton.disabled = controlsDisabled
@@ -1013,6 +1082,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     if (!isBackendMessage(payload)) return
     if (payload.type === 'action_error') {
       editingEntryId = null
+      regeneratingEntryId = null
       deletingEntryId = null
       render()
       return
@@ -1037,6 +1107,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   const unsubscribeActivate = tab.onActivate(() => send({ type: 'request_snapshot' }))
   const unsubscribeChatSwitch = ctx.events.on('CHAT_SWITCHED', () => {
     editingEntryId = null
+    regeneratingEntryId = null
     deletingEntryId = null
     entryDrafts.clear()
     draftChatId = null

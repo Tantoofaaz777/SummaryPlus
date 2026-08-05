@@ -263,6 +263,17 @@ function sourceText(items) {
 
 `);
 }
+function orderedSourceItems(sourceIds, candidates) {
+  const candidatesById = new Map(candidates.map((candidate) => [String(candidate.id), candidate]));
+  const ordered = [];
+  for (const sourceId of sourceIds) {
+    const source = candidatesById.get(sourceId);
+    if (!source)
+      return null;
+    ordered.push(source);
+  }
+  return ordered;
+}
 function deleteActiveEntry(state, entryId, deletedAt) {
   const latest = latestActiveEntry(state);
   if (!latest || latest.id !== entryId)
@@ -789,6 +800,117 @@ async function deleteEntry(chatId, entryId) {
   await saveState(chatId, state);
   return result;
 }
+function sameSourceIds(left, right) {
+  return left.length === right.length && left.every((sourceId, index) => sourceId === right[index]);
+}
+function promotionSources(entry, state) {
+  const sourceLevel = entry.level === "arc" ? "chapter" : "arc";
+  const sources = orderedSourceItems(entry.sourceIds, state.entries);
+  const sourcesAreValid = entry.sourceIds.length > 0 && sources && sources.every((source) => source.level === sourceLevel && !source.active && source.promotedToId === entry.id);
+  if (!sourcesAreValid) {
+    const sourceLabel = sourceLevel === "chapter" ? "Chapters" : "Arcs";
+    throw new Error(`The original ${sourceLabel} for this summary are no longer available, so it cannot be regenerated.`);
+  }
+  return sources;
+}
+function assertRegenerationTargetUnchanged(original, currentState) {
+  const current = currentState.entries.find((candidate) => candidate.id === original.id);
+  if (!current?.active || latestActiveEntry(currentState)?.id !== original.id || current.level !== original.level || current.content !== original.content || current.updatedAt !== original.updatedAt || !sameSourceIds(current.sourceIds, original.sourceIds)) {
+    throw new Error("The summary or its chronology changed during regeneration. The original summary was preserved.");
+  }
+  return current;
+}
+async function regenerateEntry(chatId, entryId, signal, userId) {
+  const [state, settings] = await Promise.all([
+    ensureState(chatId),
+    getSettings(userId)
+  ]);
+  const entry = state.entries.find((candidate) => candidate.id === entryId && candidate.active);
+  if (!entry)
+    throw new Error("This summary is no longer active.");
+  if (latestActiveEntry(state)?.id !== entryId) {
+    throw new Error("Regenerate newer summaries first. Only the most recent active summary can be regenerated.");
+  }
+  let chapterSources = null;
+  let summarySources = null;
+  if (entry.level === "chapter") {
+    const messages = await getMessages(chatId);
+    chapterSources = orderedSourceItems(entry.sourceIds, messages);
+    if (!entry.sourceIds.length || !chapterSources) {
+      throw new Error("The original messages for this Chapter are no longer available, so it cannot be regenerated.");
+    }
+  } else {
+    summarySources = promotionSources(entry, state);
+  }
+  let content;
+  try {
+    content = await generateSummary(entry.level, sourceText(chapterSources ?? summarySources ?? []), contextEntriesBefore(state, entry.orderStart), settings, signal, userId);
+  } catch (error) {
+    if (isAbort(error))
+      throw error;
+    await recordFailure(chatId, entry.level, error, userId);
+    return "failed";
+  }
+  if (signal.aborted)
+    throw new ProcessingCancelledError;
+  const currentState = await ensureState(chatId);
+  const currentEntry = assertRegenerationTargetUnchanged(entry, currentState);
+  if (entry.level === "chapter") {
+    const currentMessages = await getMessages(chatId);
+    const currentSources = orderedSourceItems(entry.sourceIds, currentMessages);
+    if (!chapterSources || !currentSources || !isSameMessageBatch(chapterSources, currentMessages)) {
+      throw new Error("The original messages changed during regeneration. The existing Chapter was preserved.");
+    }
+  } else {
+    const currentSources = promotionSources(currentEntry, currentState);
+    if (!summarySources || currentSources.some((source, index) => {
+      const original = summarySources?.[index];
+      return !original || source.id !== original.id || source.level !== original.level || source.content !== original.content || source.updatedAt !== original.updatedAt || source.active !== original.active || source.promotedToId !== original.promotedToId;
+    })) {
+      throw new Error("The original summaries changed during regeneration. The existing summary was preserved.");
+    }
+  }
+  if (signal.aborted)
+    throw new ProcessingCancelledError;
+  const regeneratedAt = now();
+  currentEntry.content = content;
+  currentEntry.updatedAt = regeneratedAt;
+  delete currentEntry.editedAt;
+  delete currentState.lastError;
+  await saveState(chatId, currentState);
+  return "regenerated";
+}
+async function runRegeneration(chatId, entryId, userId) {
+  if (processingChats.has(chatId)) {
+    publishActionError(new Error("Wait for the current operation to finish, or cancel it before regenerating."), userId);
+    return;
+  }
+  processingChats.add(chatId);
+  queuedChats.delete(chatId);
+  const controller = new AbortController;
+  controllers.set(chatId, controller);
+  await publishSnapshot(userId);
+  try {
+    const result = await regenerateEntry(chatId, entryId, controller.signal, userId);
+    if (result === "regenerated") {
+      publishActionSuccess("Summary regenerated.", userId);
+    }
+    while (queuedChats.has(chatId) && !controller.signal.aborted) {
+      queuedChats.delete(chatId);
+      await processPass(chatId, controller.signal, userId);
+    }
+  } catch (error) {
+    if (!isAbort(error)) {
+      spindle.log.error(`SummaryPlus regeneration failed for chat ${chatId}: ${errorMessage(error)}`);
+      publishActionError(error, userId);
+    }
+  } finally {
+    processingChats.delete(chatId);
+    queuedChats.delete(chatId);
+    controllers.delete(chatId);
+    await publishSnapshot(userId);
+  }
+}
 function mergeSettings(current, incoming) {
   return normalizeSettings({
     ...current,
@@ -931,6 +1053,14 @@ async function handleFrontendRequest(payload, userId) {
       await publishSnapshot(userId);
       return;
     }
+    case "regenerate_entry":
+      if (!chatId)
+        throw new Error("Open a chat before regenerating summaries.");
+      if (typeof payload.entryId !== "string" || !payload.entryId) {
+        throw new Error("Invalid summary entry.");
+      }
+      runRegeneration(chatId, payload.entryId, userId);
+      return;
     case "delete_entry": {
       if (!chatId)
         throw new Error("Open a chat before deleting summaries.");
