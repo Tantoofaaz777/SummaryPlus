@@ -611,6 +611,46 @@ function cancelChat(chatId) {
   queuedChats.delete(chatId);
   controllers.get(chatId)?.abort();
 }
+function entryEditorTitle(entry) {
+  const level = `${entry.level[0].toUpperCase()}${entry.level.slice(1)}`;
+  if (entry.level === "chapter")
+    return `Edit ${level} ${entry.orderStart}`;
+  return `Edit ${level} - Chapters ${entry.orderStart}-${entry.orderEnd}`;
+}
+async function editEntry(chatId, entryId, userId) {
+  if (processingChats.has(chatId)) {
+    throw new Error("Wait for processing to finish, or cancel it before editing summaries.");
+  }
+  const state = await ensureState(chatId);
+  const entry = state.entries.find((candidate) => candidate.id === entryId && candidate.active);
+  if (!entry)
+    throw new Error("This summary is no longer active.");
+  const originalUpdatedAt = entry.updatedAt;
+  const result = await spindle.textEditor.open({
+    title: entryEditorTitle(entry),
+    value: entry.content,
+    placeholder: `Write the ${entry.level} summary...`,
+    userId
+  });
+  if (result.cancelled)
+    return false;
+  if (processingChats.has(chatId)) {
+    throw new Error("Processing started while the editor was open. Reopen the summary after it finishes.");
+  }
+  const refreshedState = await ensureState(chatId);
+  const refreshedEntry = refreshedState.entries.find((candidate) => candidate.id === entryId && candidate.active);
+  if (!refreshedEntry || refreshedEntry.updatedAt !== originalUpdatedAt) {
+    throw new Error("This summary changed while the editor was open. Reopen it to edit the latest version.");
+  }
+  if (refreshedEntry.content !== result.text) {
+    const editedAt = now();
+    refreshedEntry.content = result.text;
+    refreshedEntry.updatedAt = editedAt;
+    refreshedEntry.editedAt = editedAt;
+    await saveState(chatId, refreshedState);
+  }
+  return true;
+}
 async function saveEntryEdits(chatId, edits) {
   if (processingChats.has(chatId)) {
     throw new Error("Wait for processing to finish, or cancel it before editing summaries.");
@@ -745,6 +785,21 @@ async function handleFrontendRequest(payload, userId) {
       if (chatId)
         cancelChat(chatId);
       return;
+    case "edit_entry": {
+      if (!chatId)
+        throw new Error("Open a chat before editing summaries.");
+      if (typeof payload.entryId !== "string" || !payload.entryId) {
+        throw new Error("Invalid summary entry.");
+      }
+      const saved = await editEntry(chatId, payload.entryId, userId);
+      spindle.sendToFrontend({
+        type: "entry_editor_closed",
+        entryId: payload.entryId,
+        saved
+      }, userId);
+      await publishSnapshot(userId);
+      return;
+    }
     case "save_entries":
       if (!chatId)
         throw new Error("Open a chat before editing summaries.");

@@ -13,6 +13,7 @@ import {
 type BackendMessage =
   | { type: 'snapshot'; snapshot: Snapshot }
   | { type: 'action_error'; message: string }
+  | { type: 'entry_editor_closed'; entryId: string; saved: boolean }
 
 type Screen = 'summary' | 'settings'
 type SummaryFilter = 'all' | SummaryLevel
@@ -27,6 +28,11 @@ const ICON = `
 <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
   <path d="M6.5 4.5h11M6.5 9.5h11M6.5 14.5h7M4 4.5h.01M4 9.5h.01M4 14.5h.01" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
   <path d="M14.5 18.5 17 21l4-5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>`
+
+const EXPAND_ICON = `
+<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <path d="M8.5 4.5h-4v4M15.5 4.5h4v4M19.5 15.5v4h-4M4.5 15.5v4h4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>`
 
 const STYLES = `
@@ -45,18 +51,42 @@ const STYLES = `
 .summaryplus-root * { box-sizing: border-box; }
 .summaryplus-shell { display: flex; flex-direction: column; min-height: 100%; }
 .summaryplus-nav {
-  position: sticky; top: 0; z-index: 3; display: grid; grid-template-columns: 1fr 1fr;
-  gap: 4px; padding: 10px 12px; border-bottom: 1px solid var(--sp-border);
-  background: var(--lumiverse-background, rgba(20, 20, 24, .94)); backdrop-filter: blur(12px);
+  display: flex; gap: 2px; width: min(calc(100% - 28px), 380px); margin: 14px auto 0;
+  padding: 3px; border: 1px solid var(--lumiverse-border, var(--sp-border));
+  border-radius: var(--lumiverse-radius-md, 10px);
+  background: var(--lumiverse-fill-subtle, var(--sp-surface-subtle));
 }
-.summaryplus-nav button, .summaryplus-pill {
+.summaryplus-nav button {
+  appearance: none; flex: 1 1 0; min-width: 0; padding: 7px 10px;
+  border: 1px solid transparent; border-radius: var(--lumiverse-radius, 8px);
+  background: transparent; color: var(--lumiverse-text-dim, var(--sp-muted)); font: inherit;
+  font-size: calc(12px * var(--lumiverse-font-scale, 1)); font-weight: 500; text-align: center;
+  cursor: pointer;
+  transition:
+    color var(--lumiverse-transition-fast, .15s ease),
+    background var(--lumiverse-transition-fast, .15s ease),
+    border-color var(--lumiverse-transition-fast, .15s ease),
+    box-shadow var(--lumiverse-transition-fast, .15s ease);
+}
+.summaryplus-nav button:hover:not(.is-active) {
+  color: var(--lumiverse-text-muted, var(--sp-muted));
+  background: var(--lumiverse-fill-subtle, var(--sp-surface-subtle));
+}
+.summaryplus-nav button.is-active, .summaryplus-nav button.is-active:hover {
+  color: var(--lumiverse-primary-text, var(--lumiverse-primary, var(--sp-accent)));
+  background: var(--lumiverse-primary-015, color-mix(in srgb, var(--sp-accent) 15%, transparent));
+  border-color: var(--lumiverse-primary-050, var(--lumiverse-primary, var(--sp-accent)));
+  box-shadow: var(--lumiverse-shadow-sm);
+}
+.summaryplus-pill {
   appearance: none; border: 1px solid transparent; border-radius: 999px; padding: 7px 11px;
   background: transparent; color: var(--sp-muted); font: inherit; font-size: 12px;
   font-weight: 650; cursor: pointer; transition: background .16s, color .16s, border-color .16s;
 }
-.summaryplus-nav button:hover, .summaryplus-pill:hover { color: var(--sp-text); background: var(--sp-surface); }
-.summaryplus-nav button.is-active, .summaryplus-pill.is-active {
-  color: var(--sp-text); background: var(--sp-accent-soft); border-color: color-mix(in srgb, var(--sp-accent) 38%, transparent);
+.summaryplus-pill:hover { color: var(--sp-text); background: var(--sp-surface); }
+.summaryplus-pill.is-active {
+  color: var(--sp-text); background: var(--sp-accent-soft);
+  border-color: color-mix(in srgb, var(--sp-accent) 38%, transparent);
 }
 .summaryplus-content { display: flex; flex-direction: column; gap: 14px; padding: 14px 12px 22px; }
 .summaryplus-hero { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
@@ -86,12 +116,38 @@ const STYLES = `
 .summaryplus-button.is-primary { color: #fff; border-color: transparent; background: var(--sp-accent); }
 .summaryplus-button.is-danger { color: #ef8585; }
 .summaryplus-button.is-quiet { min-height: 30px; padding: 5px 8px; background: transparent; }
-.summaryplus-stack { overflow: hidden; border: 1px solid var(--sp-border); border-radius: 12px; background: var(--sp-surface-subtle); }
-.summaryplus-entry { padding: 11px; }
-.summaryplus-entry + .summaryplus-entry { border-top: 1px solid var(--sp-border); }
-.summaryplus-entry-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 7px; }
-.summaryplus-entry-label { color: var(--sp-muted); font-size: 10px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
-.summaryplus-entry-meta { color: var(--sp-muted); font-size: 10px; }
+.summaryplus-stack { display: flex; flex-direction: column; gap: 8px; }
+.summaryplus-entry {
+  appearance: none; display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  width: 100%; min-height: 48px; padding: 11px 13px; border: 1px solid var(--sp-border);
+  border-radius: var(--lumiverse-radius, 8px); outline: none;
+  background: var(--sp-surface-subtle); color: var(--sp-text); font: inherit; text-align: left;
+  cursor: pointer;
+  transition:
+    color var(--lumiverse-transition-fast, .15s ease),
+    background var(--lumiverse-transition-fast, .15s ease),
+    border-color var(--lumiverse-transition-fast, .15s ease),
+    box-shadow var(--lumiverse-transition-fast, .15s ease);
+}
+.summaryplus-entry:hover:not(:disabled) {
+  border-color: var(--lumiverse-border-hover, var(--sp-border));
+  background: var(--sp-surface);
+}
+.summaryplus-entry:focus-visible {
+  border-color: color-mix(in srgb, var(--sp-accent) 70%, var(--sp-border));
+  box-shadow: 0 0 0 3px var(--sp-accent-soft);
+}
+.summaryplus-entry:disabled { cursor: not-allowed; opacity: .48; }
+.summaryplus-entry-label {
+  min-width: 0; overflow: hidden; color: var(--sp-text); font-size: 10px; font-weight: 800;
+  letter-spacing: .1em; text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap;
+}
+.summaryplus-entry-icon {
+  display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;
+  width: 18px; height: 18px; color: var(--lumiverse-icon-muted, var(--sp-muted));
+}
+.summaryplus-entry-icon svg { display: block; width: 100%; height: 100%; }
+.summaryplus-entry:hover:not(:disabled) .summaryplus-entry-icon { color: var(--sp-accent); }
 .summaryplus-textarea, .summaryplus-input, .summaryplus-select {
   width: 100%; border: 1px solid var(--sp-border); border-radius: 9px; outline: none;
   background: var(--lumiverse-background, rgba(0, 0, 0, .16)); color: var(--sp-text);
@@ -163,10 +219,9 @@ function isBackendMessage(payload: unknown): payload is BackendMessage {
   )
 }
 
-function levelRange(entry: SummaryEntry): string {
+function entryTitle(entry: SummaryEntry): string {
   if (entry.level === 'chapter') return `Chapter ${entry.orderStart}`
-  const unit = entry.level === 'arc' ? 'Chapters' : 'Chapter range'
-  return `${unit} ${entry.orderStart}–${entry.orderEnd}`
+  return `${LEVEL_LABEL[entry.level]} · Chapters ${entry.orderStart}-${entry.orderEnd}`
 }
 
 function numberField(
@@ -207,8 +262,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   let promptLevel: SummaryLevel = 'chapter'
   let notice: { text: string; kind: 'error' | 'success' } | null = null
   let pendingNotice: string | null = null
-  let draftChatId: string | null = null
-  const entryDrafts = new Map<string, string>()
+  let editingEntryId: string | null = null
   const promptDrafts = new Map<string, Pick<PromptDefinition, 'name' | 'systemPrompt' | 'userPrompt'>>()
 
   const send = (payload: unknown, waitingLabel?: string) => {
@@ -220,27 +274,16 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     ctx.sendToBackend(payload)
   }
 
-  const setScreen = (next: Screen) => {
+  const setScreen = (next: Screen, focusTab = false) => {
     screen = next
     notice = null
     render()
+    if (focusTab) {
+      queueMicrotask(() => root.querySelector<HTMLButtonElement>(`#summaryplus-tab-${next}`)?.focus())
+    }
   }
 
   const syncDrafts = (next: Snapshot) => {
-    if (draftChatId !== next.chatId) {
-      entryDrafts.clear()
-      draftChatId = next.chatId
-    }
-    if (next.state) {
-      const activeIds = new Set<string>()
-      for (const entry of activeEntries(next.state)) {
-        activeIds.add(entry.id)
-        if (!entryDrafts.has(entry.id)) entryDrafts.set(entry.id, entry.content)
-      }
-      for (const key of entryDrafts.keys()) {
-        if (!activeIds.has(key)) entryDrafts.delete(key)
-      }
-    }
     for (const prompt of next.prompts) {
       if (!promptDrafts.has(prompt.id)) {
         promptDrafts.set(prompt.id, {
@@ -260,10 +303,32 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     const nav = element('nav', 'summaryplus-nav')
     const summary = element('button', screen === 'summary' ? 'is-active' : '', 'Summary')
     const settings = element('button', screen === 'settings' ? 'is-active' : '', 'Settings')
+    nav.setAttribute('role', 'tablist')
+    nav.setAttribute('aria-label', 'SummaryPlus sections')
     summary.type = 'button'
     settings.type = 'button'
+    summary.id = 'summaryplus-tab-summary'
+    settings.id = 'summaryplus-tab-settings'
+    summary.setAttribute('role', 'tab')
+    settings.setAttribute('role', 'tab')
+    summary.setAttribute('aria-controls', 'summaryplus-tabpanel')
+    settings.setAttribute('aria-controls', 'summaryplus-tabpanel')
+    summary.setAttribute('aria-selected', String(screen === 'summary'))
+    settings.setAttribute('aria-selected', String(screen === 'settings'))
+    summary.tabIndex = screen === 'summary' ? 0 : -1
+    settings.tabIndex = screen === 'settings' ? 0 : -1
     summary.addEventListener('click', () => setScreen('summary'))
     settings.addEventListener('click', () => setScreen('settings'))
+    nav.addEventListener('keydown', (event) => {
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+      event.preventDefault()
+      const next = event.key === 'Home'
+        ? 'summary'
+        : event.key === 'End'
+          ? 'settings'
+          : screen === 'summary' ? 'settings' : 'summary'
+      setScreen(next, true)
+    })
     nav.append(summary, settings)
     return nav
   }
@@ -280,6 +345,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
 
   const renderSummary = (data: Snapshot): HTMLElement => {
     const content = element('main', 'summaryplus-content')
+    content.id = 'summaryplus-tabpanel'
+    content.setAttribute('role', 'tabpanel')
+    content.setAttribute('aria-labelledby', 'summaryplus-tab-summary')
     const hero = element('div', 'summaryplus-hero')
     const intro = element('div')
     intro.append(
@@ -391,42 +459,35 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     } else {
       const stack = element('div', 'summaryplus-stack')
       for (const entry of entries) {
-        const article = element('article', 'summaryplus-entry')
-        const head = element('div', 'summaryplus-entry-head')
-        head.append(
-          element('span', 'summaryplus-entry-label', LEVEL_LABEL[entry.level]),
-          element('span', 'summaryplus-entry-meta', levelRange(entry)),
+        const title = entryTitle(entry)
+        const card = element('button', 'summaryplus-entry')
+        const icon = element('span', 'summaryplus-entry-icon')
+        card.type = 'button'
+        card.disabled = data.processing || editingEntryId !== null
+        card.setAttribute('aria-label', `Edit ${title} in expanded editor`)
+        icon.innerHTML = EXPAND_ICON
+        card.append(
+          element('span', 'summaryplus-entry-label', title),
+          icon,
         )
-        const textarea = element('textarea', 'summaryplus-textarea')
-        textarea.value = entryDrafts.get(entry.id) ?? entry.content
-        textarea.disabled = data.processing
-        textarea.setAttribute('aria-label', `${LEVEL_LABEL[entry.level]} summary`)
-        textarea.addEventListener('input', () => entryDrafts.set(entry.id, textarea.value))
-        article.append(head, textarea)
-        stack.appendChild(article)
+        card.addEventListener('click', () => {
+          editingEntryId = entry.id
+          notice = null
+          render()
+          ctx.sendToBackend({ type: 'edit_entry', entryId: entry.id })
+        })
+        stack.appendChild(card)
       }
       content.appendChild(stack)
 
-      const actions = element('div', 'summaryplus-actions')
-      actions.appendChild(button(
-        'Save summary changes',
-        () => {
-          const edits = activeEntries(data.state!).map((entry) => ({
-            id: entry.id,
-            content: entryDrafts.get(entry.id) ?? entry.content,
-          }))
-          send({ type: 'save_entries', entries: edits }, 'Saving summary changes…')
-        },
-        'is-primary',
-        data.processing,
-      ))
       if (data.processing) {
+        const actions = element('div', 'summaryplus-actions')
         actions.appendChild(button(
           'Cancel',
           () => send({ type: 'cancel_processing' }, 'Cancelling after the current request…'),
         ))
+        content.appendChild(actions)
       }
-      content.appendChild(actions)
     }
 
     if (data.processing && !entries.length) {
@@ -440,6 +501,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
 
   const renderSettings = (data: Snapshot): HTMLElement => {
     const content = element('main', 'summaryplus-content')
+    content.id = 'summaryplus-tabpanel'
+    content.setAttribute('role', 'tabpanel')
+    content.setAttribute('aria-labelledby', 'summaryplus-tab-settings')
     const intro = element('div')
     intro.append(
       element('div', 'summaryplus-eyebrow', 'Configuration'),
@@ -783,8 +847,17 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   const unsubscribeBackend = ctx.onBackendMessage((payload) => {
     if (!isBackendMessage(payload)) return
     if (payload.type === 'action_error') {
+      editingEntryId = null
       pendingNotice = null
       notice = { text: payload.message, kind: 'error' }
+      render()
+      return
+    }
+    if (payload.type === 'entry_editor_closed') {
+      if (editingEntryId === payload.entryId) editingEntryId = null
+      if (payload.saved) {
+        notice = { text: 'Summary changes saved.', kind: 'success' }
+      }
       render()
       return
     }
@@ -799,8 +872,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
 
   const unsubscribeActivate = tab.onActivate(() => send({ type: 'request_snapshot' }))
   const unsubscribeChatSwitch = ctx.events.on('CHAT_SWITCHED', () => {
-    entryDrafts.clear()
-    draftChatId = null
+    editingEntryId = null
     send({ type: 'request_snapshot' })
   })
 
