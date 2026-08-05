@@ -389,7 +389,8 @@ function generationTitle(progress) {
 function generationTokenText(progress) {
   const outputTokens = progress?.outputTokens ?? 0;
   const reasoningTokens = progress?.reasoningTokens ?? 0;
-  return `~${outputTokens} output tokens · ~${reasoningTokens} reasoning tokens`;
+  const outputText = `~${outputTokens} output tokens`;
+  return reasoningTokens > 0 ? `${outputText} · ~${reasoningTokens} reasoning tokens` : outputText;
 }
 function generationRetryText(progress) {
   if (!progress || progress.attempt <= 1 || progress.maxAttempts <= 1)

@@ -365,7 +365,10 @@ function generationTitle(progress: GenerationProgress | null): string {
 function generationTokenText(progress: GenerationProgress | null): string {
   const outputTokens = progress?.outputTokens ?? 0
   const reasoningTokens = progress?.reasoningTokens ?? 0
-  return `~${outputTokens} output tokens · ~${reasoningTokens} reasoning tokens`
+  const outputText = `~${outputTokens} output tokens`
+  return reasoningTokens > 0
+    ? `${outputText} · ~${reasoningTokens} reasoning tokens`
+    : outputText
 }
 
 function generationRetryText(progress: GenerationProgress | null): string {

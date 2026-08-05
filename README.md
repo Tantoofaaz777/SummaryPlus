@@ -137,7 +137,7 @@ Both placeholders are internal to SummaryPlus and separate from the three public
 
 Provider errors, timeouts, and empty responses use the configured retry count with a one-second pause between attempts. Cancellation, disabling automation, or losing generation permission aborts without retrying.
 
-While a summary is being generated, the Summary screen displays live character-based estimates for output and reasoning tokens. The progress card also provides a full-width **Cancel** button; cancelling preserves the current source items and any existing summary text.
+While a summary is being generated, the Summary screen displays live character-based estimates for output tokens. The separate reasoning estimate appears only when the provider actually emits reasoning content. The progress card also provides a full-width **Cancel** button; cancelling preserves the current source items and any existing summary text.
 
 After all attempts fail, source items remain active and unmodified. The main screen shows the failed level and provider error, and **Process now** can resume from the same oldest eligible batch.
 
