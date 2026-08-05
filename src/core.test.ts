@@ -10,6 +10,7 @@ import {
   entryDisplayTitle,
   estimatedStreamTokens,
   hasValidContextPlaceholders,
+  hideableSummarizedMessageIds,
   macroValue,
   mergeVisibleOrder,
   migrateChatStateForBranch,
@@ -227,6 +228,33 @@ describe('message trimming', () => {
     expect(summaryPlusHiddenMessageIds(state)).toEqual([])
     expect(chaptersReadyForTrimming(state, 0).map((chapter) => chapter.id))
       .toEqual(['c1', 'c2'])
+  })
+
+  test('offers manual hiding only for visible sources of existing Chapters', () => {
+    const state = createChatState(true)
+    state.entries = [
+      {
+        ...entry('c1', 'chapter', 1),
+        sourceIds: ['m1', 'm2', 'm3'],
+      },
+      {
+        ...entry('c2', 'chapter', 2),
+        sourceIds: ['m3', 'm4'],
+      },
+      {
+        ...entry('c3', 'chapter', 3),
+        deletedAt: '2026-08-05T20:02:00.000Z',
+        sourceIds: ['m5'],
+      },
+    ]
+    const messages = [
+      { id: 'm1', content: 'visible' },
+      { id: 'm2', content: 'hidden', hidden: true },
+      { id: 'm3', content: 'visible and shared' },
+      { id: 'm5', content: 'visible but released' },
+    ]
+
+    expect(hideableSummarizedMessageIds(state, messages)).toEqual(['m1', 'm3'])
   })
 })
 

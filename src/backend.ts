@@ -22,6 +22,7 @@ import {
   isSameEntryBatch,
   isSameMessageBatch,
   hasValidContextPlaceholders,
+  hideableSummarizedMessageIds,
   latestActiveEntry,
   macroValue,
   mergeVisibleOrder,
@@ -615,6 +616,7 @@ async function createSnapshot(userId?: string): Promise<Snapshot> {
       processing: false,
       generationProgress: null,
       pendingMessageCount: 0,
+      hideableSummarizedMessageCount: 0,
       activeCounts: entryCounts(null),
     }
   }
@@ -636,6 +638,9 @@ async function createSnapshot(userId?: string): Promise<Snapshot> {
     generationProgress: generationProgressByChat.get(chatId) ?? null,
     pendingMessageCount: branchReady
       ? pendingMessages(messages, state.processedMessageIds).length
+      : 0,
+    hideableSummarizedMessageCount: branchReady
+      ? hideableSummarizedMessageIds(state, messages).length
       : 0,
     activeCounts: branchReady ? entryCounts(state) : entryCounts(null),
   }

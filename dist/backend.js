@@ -311,6 +311,10 @@ function chaptersReadyForTrimming(state, delay) {
 function summaryPlusHiddenMessageIds(state) {
   return uniqueStringIds(state.entries.flatMap((entry) => entry.autoHiddenSourceIds ?? []));
 }
+function hideableSummarizedMessageIds(state, messages) {
+  const visibleMessageIds = new Set(messages.filter((message) => !message.hidden).map((message) => String(message.id)));
+  return uniqueStringIds(state.entries.filter((entry) => entry.level === "chapter" && !entry.deletedAt).flatMap((entry) => entry.sourceIds)).filter((messageId) => visibleMessageIds.has(messageId));
+}
 function releaseSummaryPlusHiddenMessages(state) {
   const messageIds = summaryPlusHiddenMessageIds(state);
   for (const entry of state.entries) {
@@ -1209,6 +1213,7 @@ async function createSnapshot(userId) {
       processing: false,
       generationProgress: null,
       pendingMessageCount: 0,
+      hideableSummarizedMessageCount: 0,
       activeCounts: entryCounts(null)
     };
   }
@@ -1228,6 +1233,7 @@ async function createSnapshot(userId) {
     processing: processingChats.has(chatId),
     generationProgress: generationProgressByChat.get(chatId) ?? null,
     pendingMessageCount: branchReady ? pendingMessages(messages, state.processedMessageIds).length : 0,
+    hideableSummarizedMessageCount: branchReady ? hideableSummarizedMessageIds(state, messages).length : 0,
     activeCounts: branchReady ? entryCounts(state) : entryCounts(null)
   };
 }

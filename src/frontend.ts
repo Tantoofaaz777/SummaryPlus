@@ -1386,14 +1386,11 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     const ownedHiddenMessageCount = new Set(
       data.state?.entries.flatMap((entry) => entry.autoHiddenSourceIds ?? []) ?? [],
     ).size
-    const summarizedChapterCount = data.state?.entries.filter((entry) => (
-      entry.level === 'chapter' && !entry.deletedAt
-    )).length ?? 0
     const hideAllButton = button(
       'Hide summarized',
       () => send({ type: 'hide_all_summarized_messages' }),
       'is-quiet is-tint-primary',
-      summarizedChapterCount === 0 || data.processing,
+      data.hideableSummarizedMessageCount === 0 || data.processing,
     )
     hideAllButton.classList.add('summaryplus-trimming-action')
     const unhideButton = button(

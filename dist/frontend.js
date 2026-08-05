@@ -3389,8 +3389,7 @@ function setup(ctx) {
     trimmingRow.appendChild(trimmingToggle);
     const hideDelayChapters = numberField("Hide delay (Chapters)", settings.hideDelayChapters, { min: 0, step: 1, defaultValue: defaults2.hideDelayChapters });
     const ownedHiddenMessageCount = new Set(data.state?.entries.flatMap((entry) => entry.autoHiddenSourceIds ?? []) ?? []).size;
-    const summarizedChapterCount = data.state?.entries.filter((entry) => entry.level === "chapter" && !entry.deletedAt).length ?? 0;
-    const hideAllButton = button("Hide summarized", () => send({ type: "hide_all_summarized_messages" }), "is-quiet is-tint-primary", summarizedChapterCount === 0 || data.processing);
+    const hideAllButton = button("Hide summarized", () => send({ type: "hide_all_summarized_messages" }), "is-quiet is-tint-primary", data.hideableSummarizedMessageCount === 0 || data.processing);
     hideAllButton.classList.add("summaryplus-trimming-action");
     const unhideButton = button("Unhide messages", () => send({ type: "unhide_summaryplus_messages" }), "is-quiet is-tint-primary", ownedHiddenMessageCount === 0 || data.processing);
     unhideButton.classList.add("summaryplus-trimming-action");

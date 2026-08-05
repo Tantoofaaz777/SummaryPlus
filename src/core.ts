@@ -133,6 +133,7 @@ export interface Snapshot {
   processing: boolean
   generationProgress: GenerationProgress | null
   pendingMessageCount: number
+  hideableSummarizedMessageCount: number
   activeCounts: Record<SummaryLevel, number>
 }
 
@@ -579,6 +580,22 @@ export function summaryPlusHiddenMessageIds(state: ChatState): string[] {
   return uniqueStringIds(
     state.entries.flatMap((entry) => entry.autoHiddenSourceIds ?? []),
   )
+}
+
+export function hideableSummarizedMessageIds(
+  state: ChatState,
+  messages: ChatMessageLike[],
+): string[] {
+  const visibleMessageIds = new Set(
+    messages
+      .filter((message) => !message.hidden)
+      .map((message) => String(message.id)),
+  )
+  return uniqueStringIds(
+    state.entries
+      .filter((entry) => entry.level === 'chapter' && !entry.deletedAt)
+      .flatMap((entry) => entry.sourceIds),
+  ).filter((messageId) => visibleMessageIds.has(messageId))
 }
 
 export function releaseSummaryPlusHiddenMessages(state: ChatState): string[] {
