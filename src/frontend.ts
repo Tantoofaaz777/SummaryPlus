@@ -123,6 +123,14 @@ const STYLES = `
 .summaryplus-button.is-primary { color: #fff; border-color: transparent; background: var(--sp-accent); }
 .summaryplus-button.is-danger { color: #ef8585; }
 .summaryplus-button.is-quiet { min-height: 30px; padding: 5px 8px; background: transparent; }
+.summaryplus-button.is-tint-primary {
+  color: var(--lumiverse-primary-text, var(--lumiverse-primary, var(--sp-accent)));
+  border-color: var(--lumiverse-primary-050, var(--lumiverse-primary, var(--sp-accent)));
+  background: var(--lumiverse-primary-015, color-mix(in srgb, var(--sp-accent) 15%, transparent));
+}
+.summaryplus-button.is-tint-primary:hover:not(:disabled) {
+  background: var(--lumiverse-primary-020, color-mix(in srgb, var(--sp-accent) 20%, transparent));
+}
 .summaryplus-button.is-tint-success {
   color: var(--lumiverse-success, #22c55e);
   border-color: var(--lumiverse-success-050, rgba(34, 197, 94, .5));
@@ -131,13 +139,13 @@ const STYLES = `
 .summaryplus-button.is-tint-success:hover:not(:disabled) {
   background: var(--lumiverse-success-020, rgba(34, 197, 94, .2));
 }
-.summaryplus-button.is-tint-warning {
-  color: var(--lumiverse-warning, #f59e0b);
-  border-color: var(--lumiverse-warning-050, rgba(245, 158, 11, .5));
-  background: var(--lumiverse-warning-015, rgba(245, 158, 11, .15));
+.summaryplus-button.is-tint-danger {
+  color: var(--lumiverse-danger, #ef4444);
+  border-color: var(--lumiverse-danger-050, rgba(239, 68, 68, .5));
+  background: var(--lumiverse-danger-015, rgba(239, 68, 68, .15));
 }
-.summaryplus-button.is-tint-warning:hover:not(:disabled) {
-  background: var(--lumiverse-warning-020, rgba(245, 158, 11, .2));
+.summaryplus-button.is-tint-danger:hover:not(:disabled) {
+  background: var(--lumiverse-danger-020, rgba(239, 68, 68, .2));
 }
 .summaryplus-stack { display: flex; flex-direction: column; gap: 8px; }
 .summaryplus-entry {
@@ -201,8 +209,9 @@ const STYLES = `
 .summaryplus-field small { color: var(--sp-muted); font-size: 10px; line-height: 1.4; }
 .summaryplus-switch { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .summaryplus-switch input { width: 17px; height: 17px; accent-color: var(--sp-accent); }
-.summaryplus-prompt-head { display: flex; gap: 7px; }
+.summaryplus-prompt-head { display: flex; align-items: center; gap: 7px; }
 .summaryplus-prompt-head .summaryplus-select { flex: 1; min-width: 0; }
+.summaryplus-prompt-head .summaryplus-button { flex: 0 0 auto; }
 .summaryplus-builtin { display: inline-flex; align-items: center; width: fit-content; padding: 3px 7px; border-radius: 999px; background: var(--sp-accent-soft); color: var(--sp-accent); font-size: 9px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
 .summaryplus-loading { display: flex; align-items: center; justify-content: center; min-height: 220px; color: var(--sp-muted); font-size: 12px; }
 .summaryplus-dot { width: 7px; height: 7px; margin-right: 8px; border-radius: 50%; background: var(--sp-accent); animation: summaryplus-pulse 1s ease-in-out infinite alternate; }
@@ -495,7 +504,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         notice = null
         render()
       },
-      'is-quiet is-tint-warning',
+      'is-quiet is-tint-danger',
       data.processing || editingEntryId !== null || !hasPendingChanges,
     )
     const saveButton = button(
@@ -657,16 +666,14 @@ export function setup(ctx: SpindleFrontendContext): () => void {
           () => send({ type: 'new_prompt', level: promptLevel }, 'Creating prompt…'),
           'is-quiet',
         ),
+        button(
+          'Duplicate',
+          () => send({ type: 'duplicate_prompt', promptId: selected.id }, 'Duplicating prompt…'),
+          'is-quiet',
+        ),
       )
-      promptSection.appendChild(promptHead)
-
-      const promptActions = element('div', 'summaryplus-actions')
-      promptActions.appendChild(button(
-        'Duplicate',
-        () => send({ type: 'duplicate_prompt', promptId: selected.id }, 'Duplicating prompt…'),
-      ))
       if (!selected.builtIn) {
-        promptActions.appendChild(button(
+        promptHead.appendChild(button(
           'Delete',
           async () => {
             const result = await ctx.ui.showConfirm({
@@ -680,10 +687,10 @@ export function setup(ctx: SpindleFrontendContext): () => void {
               send({ type: 'delete_prompt', promptId: selected.id }, 'Deleting prompt…')
             }
           },
-          'is-danger',
+          'is-quiet is-danger',
         ))
       }
-      promptSection.appendChild(promptActions)
+      promptSection.appendChild(promptHead)
 
       if (selected.builtIn) {
         promptSection.append(
@@ -730,14 +737,23 @@ export function setup(ctx: SpindleFrontendContext): () => void {
           systemPrompt: systemPrompt.value,
           userPrompt: userPrompt.value,
         })
+        if (savePromptButton) {
+          savePromptButton.disabled = !hasPromptChanges()
+        }
       }
+      const hasPromptChanges = () => (
+        promptName.value.trim() !== selected.name
+        || systemPrompt.value !== selected.systemPrompt
+        || userPrompt.value !== selected.userPrompt
+      )
+      let savePromptButton: HTMLButtonElement | null = null
       promptName.addEventListener('input', updatePromptDraft)
       systemPrompt.addEventListener('input', updatePromptDraft)
       userPrompt.addEventListener('input', updatePromptDraft)
       promptSection.append(nameField, systemField, userField)
 
       if (!selected.builtIn) {
-        promptSection.appendChild(button('Save prompt', () => {
+        savePromptButton = button('Save prompt', () => {
           updatePromptDraft()
           send({
             type: 'save_prompt',
@@ -748,7 +764,8 @@ export function setup(ctx: SpindleFrontendContext): () => void {
               userPrompt: userPrompt.value,
             },
           }, 'Saving prompt…')
-        }, 'is-primary'))
+        }, 'is-quiet is-tint-primary', !hasPromptChanges())
+        promptSection.appendChild(savePromptButton)
       }
     }
 
