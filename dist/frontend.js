@@ -2376,6 +2376,12 @@ var STYLES = `
 }
 .summaryplus-content { display: flex; flex-direction: column; gap: 14px; padding: 14px 12px 22px; }
 .summaryplus-hero { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.summaryplus-screen-header {
+  width: 100%; padding: 10px 0 12px; text-align: center;
+}
+.summaryplus-hero.summaryplus-screen-header {
+  align-items: center; justify-content: center;
+}
 .summaryplus-eyebrow { color: var(--sp-accent); font-size: 10px; font-weight: 800; letter-spacing: .13em; text-transform: uppercase; }
 .summaryplus-title { margin: 3px 0 2px; font-size: 18px; line-height: 1.25; font-weight: 750; }
 .summaryplus-copy, .summaryplus-help { color: var(--sp-muted); font-size: 12px; line-height: 1.55; }
@@ -2984,7 +2990,7 @@ function setup(ctx) {
     content.id = "summaryplus-tabpanel";
     content.setAttribute("role", "tabpanel");
     content.setAttribute("aria-labelledby", "summaryplus-tab-summary");
-    const hero = element("div", "summaryplus-hero");
+    const hero = element("div", "summaryplus-hero summaryplus-screen-header");
     const intro = element("div");
     intro.append(element("div", "summaryplus-eyebrow", "Story memory"), element("h2", "summaryplus-title", "Active summary"));
     hero.appendChild(intro);
@@ -3218,7 +3224,7 @@ function setup(ctx) {
     content.id = "summaryplus-tabpanel";
     content.setAttribute("role", "tabpanel");
     content.setAttribute("aria-labelledby", "summaryplus-tab-prompts");
-    const intro = element("div");
+    const intro = element("div", "summaryplus-screen-header");
     intro.append(element("div", "summaryplus-eyebrow", "Generation instructions"), element("h2", "summaryplus-title", "Prompt Library"));
     content.appendChild(intro);
     const settings = data.settings;
@@ -3343,13 +3349,18 @@ function setup(ctx) {
     const settings = data.settings;
     const defaults2 = createDefaultSettings();
     const automationSection = element("section", "summaryplus-section");
-    const automationRow = element("label", "summaryplus-switch");
+    const automationRow = element("div", "summaryplus-switch");
     const automationText = element("div");
     automationText.append(element("div", "summaryplus-label", "Automatic processing"));
     const automation = element("input");
     automation.type = "checkbox";
     automation.checked = settings.automationEnabled;
-    automationRow.append(automationText, automation);
+    automation.setAttribute("aria-label", "Automatic processing");
+    const automationToggle = element("label", "summaryplus-regex-toggle summaryplus-settings-toggle");
+    const automationSwitch = element("span", "summaryplus-regex-switch");
+    automationSwitch.setAttribute("aria-hidden", "true");
+    automationToggle.append(automation, automationSwitch);
+    automationRow.append(automationText, automationToggle);
     automationSection.appendChild(automationRow);
     const batchingSection = element("section", "summaryplus-section");
     batchingSection.appendChild(element("h3", "summaryplus-section-title", "Promotion"));
