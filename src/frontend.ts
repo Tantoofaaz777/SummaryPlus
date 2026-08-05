@@ -13,9 +13,15 @@ import {
 type BackendMessage =
   | { type: 'snapshot'; snapshot: Snapshot }
   | { type: 'action_error'; message: string }
-  | { type: 'entry_editor_closed'; entryId: string; saved: boolean }
+  | {
+    type: 'entry_editor_closed'
+    chatId: string
+    entryId: string
+    text: string
+    cancelled: boolean
+  }
 
-type Screen = 'summary' | 'settings'
+type Screen = 'summary' | 'prompts' | 'settings'
 type SummaryFilter = 'all' | SummaryLevel
 
 const LEVEL_LABEL: Record<SummaryLevel, string> = {
@@ -103,6 +109,7 @@ const STYLES = `
 .summaryplus-banner.is-success { border-color: color-mix(in srgb, #59b889 44%, transparent); background: color-mix(in srgb, #59b889 9%, transparent); }
 .summaryplus-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
 .summaryplus-toolbar.is-split { justify-content: space-between; }
+.summaryplus-toolbar-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-left: auto; }
 .summaryplus-actions { display: flex; flex-wrap: wrap; gap: 7px; }
 .summaryplus-button {
   appearance: none; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
@@ -116,6 +123,22 @@ const STYLES = `
 .summaryplus-button.is-primary { color: #fff; border-color: transparent; background: var(--sp-accent); }
 .summaryplus-button.is-danger { color: #ef8585; }
 .summaryplus-button.is-quiet { min-height: 30px; padding: 5px 8px; background: transparent; }
+.summaryplus-button.is-tint-success {
+  color: var(--lumiverse-success, #22c55e);
+  border-color: var(--lumiverse-success-050, rgba(34, 197, 94, .5));
+  background: var(--lumiverse-success-015, rgba(34, 197, 94, .15));
+}
+.summaryplus-button.is-tint-success:hover:not(:disabled) {
+  background: var(--lumiverse-success-020, rgba(34, 197, 94, .2));
+}
+.summaryplus-button.is-tint-warning {
+  color: var(--lumiverse-warning, #f59e0b);
+  border-color: var(--lumiverse-warning-050, rgba(245, 158, 11, .5));
+  background: var(--lumiverse-warning-015, rgba(245, 158, 11, .15));
+}
+.summaryplus-button.is-tint-warning:hover:not(:disabled) {
+  background: var(--lumiverse-warning-020, rgba(245, 158, 11, .2));
+}
 .summaryplus-stack { display: flex; flex-direction: column; gap: 8px; }
 .summaryplus-entry {
   appearance: none; display: flex; align-items: center; justify-content: space-between; gap: 12px;
@@ -137,6 +160,10 @@ const STYLES = `
   border-color: color-mix(in srgb, var(--sp-accent) 70%, var(--sp-border));
   box-shadow: 0 0 0 3px var(--sp-accent-soft);
 }
+.summaryplus-entry.has-pending-change {
+  border-color: var(--lumiverse-success-050, rgba(34, 197, 94, .5));
+  background: var(--lumiverse-success-015, rgba(34, 197, 94, .15));
+}
 .summaryplus-entry:disabled { cursor: not-allowed; opacity: .48; }
 .summaryplus-entry-label {
   min-width: 0; overflow: hidden; color: var(--sp-text); font-size: 10px; font-weight: 800;
@@ -148,6 +175,9 @@ const STYLES = `
 }
 .summaryplus-entry-icon svg { display: block; width: 100%; height: 100%; }
 .summaryplus-entry:hover:not(:disabled) .summaryplus-entry-icon { color: var(--sp-accent); }
+.summaryplus-entry.has-pending-change .summaryplus-entry-icon {
+  color: var(--lumiverse-success, #22c55e);
+}
 .summaryplus-textarea, .summaryplus-input, .summaryplus-select {
   width: 100%; border: 1px solid var(--sp-border); border-radius: 9px; outline: none;
   background: var(--lumiverse-background, rgba(0, 0, 0, .16)); color: var(--sp-text);
@@ -174,9 +204,6 @@ const STYLES = `
 .summaryplus-prompt-head { display: flex; gap: 7px; }
 .summaryplus-prompt-head .summaryplus-select { flex: 1; min-width: 0; }
 .summaryplus-builtin { display: inline-flex; align-items: center; width: fit-content; padding: 3px 7px; border-radius: 999px; background: var(--sp-accent-soft); color: var(--sp-accent); font-size: 9px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
-.summaryplus-placeholder-status { font-size: 10px; }
-.summaryplus-placeholder-status.is-valid { color: #65bd91; }
-.summaryplus-placeholder-status.is-invalid { color: #e57979; }
 .summaryplus-loading { display: flex; align-items: center; justify-content: center; min-height: 220px; color: var(--sp-muted); font-size: 12px; }
 .summaryplus-dot { width: 7px; height: 7px; margin-right: 8px; border-radius: 50%; background: var(--sp-accent); animation: summaryplus-pulse 1s ease-in-out infinite alternate; }
 @keyframes summaryplus-pulse { to { opacity: .28; transform: scale(.78); } }
@@ -263,6 +290,8 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   let notice: { text: string; kind: 'error' | 'success' } | null = null
   let pendingNotice: string | null = null
   let editingEntryId: string | null = null
+  let draftChatId: string | null = null
+  const entryDrafts = new Map<string, string>()
   const promptDrafts = new Map<string, Pick<PromptDefinition, 'name' | 'systemPrompt' | 'userPrompt'>>()
 
   const send = (payload: unknown, waitingLabel?: string) => {
@@ -284,6 +313,19 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   }
 
   const syncDrafts = (next: Snapshot) => {
+    if (draftChatId !== next.chatId) {
+      entryDrafts.clear()
+      draftChatId = next.chatId
+    }
+    if (!next.state) {
+      entryDrafts.clear()
+    } else {
+      const activeById = new Map(activeEntries(next.state).map((entry) => [entry.id, entry]))
+      for (const [entryId, draft] of entryDrafts) {
+        const entry = activeById.get(entryId)
+        if (!entry || entry.content === draft) entryDrafts.delete(entryId)
+      }
+    }
     for (const prompt of next.prompts) {
       if (!promptDrafts.has(prompt.id)) {
         promptDrafts.set(prompt.id, {
@@ -301,35 +343,39 @@ export function setup(ctx: SpindleFrontendContext): () => void {
 
   const renderNav = (): HTMLElement => {
     const nav = element('nav', 'summaryplus-nav')
-    const summary = element('button', screen === 'summary' ? 'is-active' : '', 'Summary')
-    const settings = element('button', screen === 'settings' ? 'is-active' : '', 'Settings')
+    const tabs: Array<{ id: Screen; label: string }> = [
+      { id: 'summary', label: 'Summary' },
+      { id: 'prompts', label: 'Prompts' },
+      { id: 'settings', label: 'Settings' },
+    ]
     nav.setAttribute('role', 'tablist')
     nav.setAttribute('aria-label', 'SummaryPlus sections')
-    summary.type = 'button'
-    settings.type = 'button'
-    summary.id = 'summaryplus-tab-summary'
-    settings.id = 'summaryplus-tab-settings'
-    summary.setAttribute('role', 'tab')
-    settings.setAttribute('role', 'tab')
-    summary.setAttribute('aria-controls', 'summaryplus-tabpanel')
-    settings.setAttribute('aria-controls', 'summaryplus-tabpanel')
-    summary.setAttribute('aria-selected', String(screen === 'summary'))
-    settings.setAttribute('aria-selected', String(screen === 'settings'))
-    summary.tabIndex = screen === 'summary' ? 0 : -1
-    settings.tabIndex = screen === 'settings' ? 0 : -1
-    summary.addEventListener('click', () => setScreen('summary'))
-    settings.addEventListener('click', () => setScreen('settings'))
+    for (const tabDefinition of tabs) {
+      const tabButton = element(
+        'button',
+        screen === tabDefinition.id ? 'is-active' : '',
+        tabDefinition.label,
+      )
+      tabButton.type = 'button'
+      tabButton.id = `summaryplus-tab-${tabDefinition.id}`
+      tabButton.setAttribute('role', 'tab')
+      tabButton.setAttribute('aria-controls', 'summaryplus-tabpanel')
+      tabButton.setAttribute('aria-selected', String(screen === tabDefinition.id))
+      tabButton.tabIndex = screen === tabDefinition.id ? 0 : -1
+      tabButton.addEventListener('click', () => setScreen(tabDefinition.id))
+      nav.appendChild(tabButton)
+    }
     nav.addEventListener('keydown', (event) => {
       if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
       event.preventDefault()
-      const next = event.key === 'Home'
-        ? 'summary'
-        : event.key === 'End'
-          ? 'settings'
-          : screen === 'summary' ? 'settings' : 'summary'
-      setScreen(next, true)
+      const currentIndex = tabs.findIndex((tabDefinition) => tabDefinition.id === screen)
+      let nextIndex = currentIndex
+      if (event.key === 'Home') nextIndex = 0
+      if (event.key === 'End') nextIndex = tabs.length - 1
+      if (event.key === 'ArrowLeft') nextIndex = (currentIndex - 1 + tabs.length) % tabs.length
+      if (event.key === 'ArrowRight') nextIndex = (currentIndex + 1) % tabs.length
+      setScreen(tabs[nextIndex].id, true)
     })
-    nav.append(summary, settings)
     return nav
   }
 
@@ -415,6 +461,15 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       content.appendChild(error)
     }
 
+    const allEntries = activeEntries(data.state)
+    const pendingEdits = allEntries.flatMap((entry) => {
+      const content = entryDrafts.get(entry.id)
+      return content !== undefined && content !== entry.content
+        ? [{ id: entry.id, content }]
+        : []
+    })
+    const hasPendingChanges = pendingEdits.length > 0
+
     const toolbar = element('div', 'summaryplus-toolbar is-split')
     const filters = element('div', 'summaryplus-toolbar')
     const filterOptions: Array<[SummaryFilter, string]> = [
@@ -432,13 +487,34 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       })
       filters.appendChild(pill)
     }
+    const toolbarActions = element('div', 'summaryplus-toolbar-actions')
+    const flushButton = button(
+      'Flush changes',
+      () => {
+        entryDrafts.clear()
+        notice = null
+        render()
+      },
+      'is-quiet is-tint-warning',
+      data.processing || editingEntryId !== null || !hasPendingChanges,
+    )
+    const saveButton = button(
+      'Save changes',
+      () => send(
+        { type: 'save_entries', entries: pendingEdits },
+        'Saving summary changes…',
+      ),
+      'is-quiet is-tint-success',
+      data.processing || editingEntryId !== null || !hasPendingChanges,
+    )
     const processButton = button(
       data.processing ? 'Processing…' : 'Process now',
       () => send({ type: 'process_now' }, 'Checking eligible batches…'),
       'is-quiet',
-      data.processing,
+      data.processing || editingEntryId !== null || hasPendingChanges,
     )
-    toolbar.append(filters, processButton)
+    toolbarActions.append(flushButton, saveButton, processButton)
+    toolbar.append(filters, toolbarActions)
     content.appendChild(toolbar)
 
     const entries = activeEntries(
@@ -460,7 +536,12 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       const stack = element('div', 'summaryplus-stack')
       for (const entry of entries) {
         const title = entryTitle(entry)
-        const card = element('button', 'summaryplus-entry')
+        const draft = entryDrafts.get(entry.id)
+        const hasPendingChange = draft !== undefined && draft !== entry.content
+        const card = element(
+          'button',
+          `summaryplus-entry ${hasPendingChange ? 'has-pending-change' : ''}`.trim(),
+        )
         const icon = element('span', 'summaryplus-entry-icon')
         card.type = 'button'
         card.disabled = data.processing || editingEntryId !== null
@@ -474,7 +555,11 @@ export function setup(ctx: SpindleFrontendContext): () => void {
           editingEntryId = entry.id
           notice = null
           render()
-          ctx.sendToBackend({ type: 'edit_entry', entryId: entry.id })
+          ctx.sendToBackend({
+            type: 'edit_entry',
+            entryId: entry.id,
+            value: draft ?? entry.content,
+          })
         })
         stack.appendChild(card)
       }
@@ -496,6 +581,178 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         () => send({ type: 'cancel_processing' }, 'Cancelling after the current request…'),
       ))
     }
+    return content
+  }
+
+  const renderPrompts = (data: Snapshot): HTMLElement => {
+    const content = element('main', 'summaryplus-content')
+    content.id = 'summaryplus-tabpanel'
+    content.setAttribute('role', 'tabpanel')
+    content.setAttribute('aria-labelledby', 'summaryplus-tab-prompts')
+    const intro = element('div')
+    intro.append(
+      element('div', 'summaryplus-eyebrow', 'Generation instructions'),
+      element('h2', 'summaryplus-title', 'Prompts'),
+      element(
+        'div',
+        'summaryplus-copy',
+        'Manage independent instructions for Chapter, Arc, and Volume generation.',
+      ),
+    )
+    content.appendChild(intro)
+
+    const noticeNode = renderNotice()
+    if (noticeNode) content.appendChild(noticeNode)
+
+    const settings = data.settings
+    const promptSection = element('section', 'summaryplus-section')
+    promptSection.append(
+      element('h3', 'summaryplus-section-title', 'Prompt library'),
+      element(
+        'div',
+        'summaryplus-help',
+        `Each level has its own System and User prompt. ${INPUT_PLACEHOLDER} is private to generation and receives chat messages, Chapters, or Arcs according to the level.`,
+      ),
+    )
+
+    const levelToolbar = element('div', 'summaryplus-toolbar')
+    for (const level of LEVELS) {
+      const levelButton = element(
+        'button',
+        `summaryplus-pill ${promptLevel === level ? 'is-active' : ''}`,
+        LEVEL_LABEL[level],
+      )
+      levelButton.type = 'button'
+      levelButton.addEventListener('click', () => {
+        promptLevel = level
+        render()
+      })
+      levelToolbar.appendChild(levelButton)
+    }
+    promptSection.appendChild(levelToolbar)
+
+    const promptsForLevel = data.prompts.filter((prompt) => prompt.level === promptLevel)
+    const activePromptId = settings.activePromptIds[promptLevel]
+    const selected = promptsForLevel.find((prompt) => prompt.id === activePromptId) ?? promptsForLevel[0]
+    if (selected) {
+      const promptHead = element('div', 'summaryplus-prompt-head')
+      const promptSelect = element('select', 'summaryplus-select')
+      for (const prompt of promptsForLevel) {
+        const option = element('option', '', prompt.name)
+        option.value = prompt.id
+        promptSelect.appendChild(option)
+      }
+      promptSelect.value = selected.id
+      promptSelect.addEventListener('change', () => {
+        send({
+          type: 'select_prompt',
+          level: promptLevel,
+          promptId: promptSelect.value,
+        }, 'Selecting prompt…')
+      })
+      promptHead.append(
+        promptSelect,
+        button(
+          'New',
+          () => send({ type: 'new_prompt', level: promptLevel }, 'Creating prompt…'),
+          'is-quiet',
+        ),
+      )
+      promptSection.appendChild(promptHead)
+
+      const promptActions = element('div', 'summaryplus-actions')
+      promptActions.appendChild(button(
+        'Duplicate',
+        () => send({ type: 'duplicate_prompt', promptId: selected.id }, 'Duplicating prompt…'),
+      ))
+      if (!selected.builtIn) {
+        promptActions.appendChild(button(
+          'Delete',
+          async () => {
+            const result = await ctx.ui.showConfirm({
+              title: 'Delete prompt',
+              message: `Delete “${selected.name}”? This cannot be undone.`,
+              variant: 'danger',
+              confirmLabel: 'Delete',
+            })
+            if (result.confirmed) {
+              promptDrafts.delete(selected.id)
+              send({ type: 'delete_prompt', promptId: selected.id }, 'Deleting prompt…')
+            }
+          },
+          'is-danger',
+        ))
+      }
+      promptSection.appendChild(promptActions)
+
+      if (selected.builtIn) {
+        promptSection.append(
+          element('span', 'summaryplus-builtin', 'Protected default'),
+          element(
+            'div',
+            'summaryplus-help',
+            'Default prompts are read-only. Duplicate this prompt to create an editable copy.',
+          ),
+        )
+      }
+
+      const draft = promptDrafts.get(selected.id) ?? {
+        name: selected.name,
+        systemPrompt: selected.systemPrompt,
+        userPrompt: selected.userPrompt,
+      }
+      const nameField = element('label', 'summaryplus-field')
+      nameField.appendChild(element('span', 'summaryplus-label', 'Name'))
+      const promptName = element('input', 'summaryplus-input')
+      promptName.value = draft.name
+      promptName.readOnly = selected.builtIn
+      nameField.appendChild(promptName)
+
+      const systemField = element('label', 'summaryplus-field')
+      systemField.appendChild(element('span', 'summaryplus-label', 'System prompt'))
+      const systemPrompt = element('textarea', 'summaryplus-textarea')
+      systemPrompt.value = draft.systemPrompt
+      systemPrompt.readOnly = selected.builtIn
+      systemPrompt.rows = 8
+      systemField.appendChild(systemPrompt)
+
+      const userField = element('label', 'summaryplus-field')
+      userField.appendChild(element('span', 'summaryplus-label', 'User prompt'))
+      const userPrompt = element('textarea', 'summaryplus-textarea')
+      userPrompt.value = draft.userPrompt
+      userPrompt.readOnly = selected.builtIn
+      userPrompt.rows = 5
+      userField.appendChild(userPrompt)
+
+      const updatePromptDraft = () => {
+        promptDrafts.set(selected.id, {
+          name: promptName.value,
+          systemPrompt: systemPrompt.value,
+          userPrompt: userPrompt.value,
+        })
+      }
+      promptName.addEventListener('input', updatePromptDraft)
+      systemPrompt.addEventListener('input', updatePromptDraft)
+      userPrompt.addEventListener('input', updatePromptDraft)
+      promptSection.append(nameField, systemField, userField)
+
+      if (!selected.builtIn) {
+        promptSection.appendChild(button('Save prompt', () => {
+          updatePromptDraft()
+          send({
+            type: 'save_prompt',
+            prompt: {
+              id: selected.id,
+              name: promptName.value,
+              systemPrompt: systemPrompt.value,
+              userPrompt: userPrompt.value,
+            },
+          }, 'Saving prompt…')
+        }, 'is-primary'))
+      }
+    }
+
+    content.appendChild(promptSection)
     return content
   }
 
@@ -662,171 +919,11 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       }, 'Saving settings…')
     }, 'is-primary')
 
-    const promptSection = element('section', 'summaryplus-section')
-    promptSection.append(
-      element('h3', 'summaryplus-section-title', 'Prompts'),
-      element(
-        'div',
-        'summaryplus-help',
-        `Each level has its own System and User prompt. ${INPUT_PLACEHOLDER} is private to generation and receives chat messages, Chapters, or Arcs according to the level.`,
-      ),
-    )
-
-    const levelToolbar = element('div', 'summaryplus-toolbar')
-    for (const level of LEVELS) {
-      const levelButton = element(
-        'button',
-        `summaryplus-pill ${promptLevel === level ? 'is-active' : ''}`,
-        LEVEL_LABEL[level],
-      )
-      levelButton.type = 'button'
-      levelButton.addEventListener('click', () => {
-        promptLevel = level
-        render()
-      })
-      levelToolbar.appendChild(levelButton)
-    }
-    promptSection.appendChild(levelToolbar)
-
-    const promptsForLevel = data.prompts.filter((prompt) => prompt.level === promptLevel)
-    const activePromptId = settings.activePromptIds[promptLevel]
-    const selected = promptsForLevel.find((prompt) => prompt.id === activePromptId) ?? promptsForLevel[0]
-    if (selected) {
-      const promptHead = element('div', 'summaryplus-prompt-head')
-      const promptSelect = element('select', 'summaryplus-select')
-      for (const prompt of promptsForLevel) {
-        const option = element('option', '', prompt.name)
-        option.value = prompt.id
-        promptSelect.appendChild(option)
-      }
-      promptSelect.value = selected.id
-      promptSelect.addEventListener('change', () => {
-        send({
-          type: 'select_prompt',
-          level: promptLevel,
-          promptId: promptSelect.value,
-        }, 'Selecting prompt…')
-      })
-      promptHead.append(
-        promptSelect,
-        button(
-          'New',
-          () => send({ type: 'new_prompt', level: promptLevel }, 'Creating prompt…'),
-          'is-quiet',
-        ),
-      )
-      promptSection.appendChild(promptHead)
-
-      const promptActions = element('div', 'summaryplus-actions')
-      promptActions.appendChild(button(
-        'Duplicate',
-        () => send({ type: 'duplicate_prompt', promptId: selected.id }, 'Duplicating prompt…'),
-      ))
-      if (!selected.builtIn) {
-        promptActions.appendChild(button(
-          'Delete',
-          async () => {
-            const result = await ctx.ui.showConfirm({
-              title: 'Delete prompt',
-              message: `Delete “${selected.name}”? This cannot be undone.`,
-              variant: 'danger',
-              confirmLabel: 'Delete',
-            })
-            if (result.confirmed) {
-              promptDrafts.delete(selected.id)
-              send({ type: 'delete_prompt', promptId: selected.id }, 'Deleting prompt…')
-            }
-          },
-          'is-danger',
-        ))
-      }
-      promptSection.appendChild(promptActions)
-
-      if (selected.builtIn) {
-        promptSection.append(
-          element('span', 'summaryplus-builtin', 'Protected default'),
-          element(
-            'div',
-            'summaryplus-help',
-            'Default prompts are read-only. Duplicate this prompt to create an editable copy.',
-          ),
-        )
-      }
-
-      const draft = promptDrafts.get(selected.id) ?? {
-        name: selected.name,
-        systemPrompt: selected.systemPrompt,
-        userPrompt: selected.userPrompt,
-      }
-      const nameField = element('label', 'summaryplus-field')
-      nameField.appendChild(element('span', 'summaryplus-label', 'Name'))
-      const promptName = element('input', 'summaryplus-input')
-      promptName.value = draft.name
-      promptName.readOnly = selected.builtIn
-      nameField.appendChild(promptName)
-
-      const systemField = element('label', 'summaryplus-field')
-      systemField.appendChild(element('span', 'summaryplus-label', 'System prompt'))
-      const systemPrompt = element('textarea', 'summaryplus-textarea')
-      systemPrompt.value = draft.systemPrompt
-      systemPrompt.readOnly = selected.builtIn
-      systemPrompt.rows = 8
-      systemField.appendChild(systemPrompt)
-
-      const userField = element('label', 'summaryplus-field')
-      userField.appendChild(element('span', 'summaryplus-label', 'User prompt'))
-      const userPrompt = element('textarea', 'summaryplus-textarea')
-      userPrompt.value = draft.userPrompt
-      userPrompt.readOnly = selected.builtIn
-      userPrompt.rows = 5
-      const placeholderStatus = element('div', 'summaryplus-placeholder-status')
-      const updatePlaceholderStatus = () => {
-        const valid = userPrompt.value.includes(INPUT_PLACEHOLDER)
-        placeholderStatus.className = `summaryplus-placeholder-status is-${valid ? 'valid' : 'invalid'}`
-        placeholderStatus.textContent = valid
-          ? `${INPUT_PLACEHOLDER} is present.`
-          : `${INPUT_PLACEHOLDER} is required before generation.`
-      }
-      updatePlaceholderStatus()
-      userField.append(userPrompt, placeholderStatus)
-
-      const updatePromptDraft = () => {
-        promptDrafts.set(selected.id, {
-          name: promptName.value,
-          systemPrompt: systemPrompt.value,
-          userPrompt: userPrompt.value,
-        })
-      }
-      promptName.addEventListener('input', updatePromptDraft)
-      systemPrompt.addEventListener('input', updatePromptDraft)
-      userPrompt.addEventListener('input', () => {
-        updatePromptDraft()
-        updatePlaceholderStatus()
-      })
-      promptSection.append(nameField, systemField, userField)
-
-      if (!selected.builtIn) {
-        promptSection.appendChild(button('Save prompt', () => {
-          updatePromptDraft()
-          send({
-            type: 'save_prompt',
-            prompt: {
-              id: selected.id,
-              name: promptName.value,
-              systemPrompt: systemPrompt.value,
-              userPrompt: userPrompt.value,
-            },
-          }, 'Saving prompt…')
-        }, 'is-primary'))
-      }
-    }
-
     content.append(
       automationSection,
       batchingSection,
       modelSection,
       saveSettingsButton,
-      promptSection,
     )
     return content
   }
@@ -839,7 +936,12 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       loading.append(element('span', 'summaryplus-dot'), document.createTextNode('Loading SummaryPlus…'))
       shell.appendChild(loading)
     } else {
-      shell.appendChild(screen === 'summary' ? renderSummary(snapshot) : renderSettings(snapshot))
+      const content = screen === 'summary'
+        ? renderSummary(snapshot)
+        : screen === 'prompts'
+          ? renderPrompts(snapshot)
+          : renderSettings(snapshot)
+      shell.appendChild(content)
     }
     root.replaceChildren(shell)
   }
@@ -855,8 +957,12 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     }
     if (payload.type === 'entry_editor_closed') {
       if (editingEntryId === payload.entryId) editingEntryId = null
-      if (payload.saved) {
-        notice = { text: 'Summary changes saved.', kind: 'success' }
+      if (!payload.cancelled && snapshot?.chatId === payload.chatId && snapshot.state) {
+        const entry = activeEntries(snapshot.state).find((candidate) => candidate.id === payload.entryId)
+        if (entry) {
+          if (entry.content === payload.text) entryDrafts.delete(entry.id)
+          else entryDrafts.set(entry.id, payload.text)
+        }
       }
       render()
       return
@@ -873,6 +979,8 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   const unsubscribeActivate = tab.onActivate(() => send({ type: 'request_snapshot' }))
   const unsubscribeChatSwitch = ctx.events.on('CHAT_SWITCHED', () => {
     editingEntryId = null
+    entryDrafts.clear()
+    draftChatId = null
     send({ type: 'request_snapshot' })
   })
 

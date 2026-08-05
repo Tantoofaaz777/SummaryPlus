@@ -38,7 +38,7 @@ type FrontendRequest =
   | { type: 'process_history' }
   | { type: 'process_now' }
   | { type: 'cancel_processing' }
-  | { type: 'edit_entry'; entryId: string }
+  | { type: 'edit_entry'; entryId: string; value: string }
   | { type: 'save_entries'; entries: Array<{ id: string; content: string }> }
   | { type: 'save_settings'; settings: Partial<SummaryPlusSettings> }
   | { type: 'save_prompt'; prompt: Pick<PromptDefinition, 'id' | 'name' | 'systemPrompt' | 'userPrompt'> }
@@ -519,8 +519,9 @@ function entryEditorTitle(entry: SummaryEntry): string {
 async function editEntry(
   chatId: string,
   entryId: string,
+  value: string,
   userId?: string,
-): Promise<boolean> {
+): Promise<{ text: string; cancelled: boolean }> {
   if (processingChats.has(chatId)) {
     throw new Error('Wait for processing to finish, or cancel it before editing summaries.')
   }
@@ -532,11 +533,11 @@ async function editEntry(
   const originalUpdatedAt = entry.updatedAt
   const result = await spindle.textEditor.open({
     title: entryEditorTitle(entry),
-    value: entry.content,
+    value,
     placeholder: `Write the ${entry.level} summary...`,
     userId,
   })
-  if (result.cancelled) return false
+  if (result.cancelled) return result
 
   if (processingChats.has(chatId)) {
     throw new Error('Processing started while the editor was open. Reopen the summary after it finishes.')
@@ -550,14 +551,7 @@ async function editEntry(
     throw new Error('This summary changed while the editor was open. Reopen it to edit the latest version.')
   }
 
-  if (refreshedEntry.content !== result.text) {
-    const editedAt = now()
-    refreshedEntry.content = result.text
-    refreshedEntry.updatedAt = editedAt
-    refreshedEntry.editedAt = editedAt
-    await saveState(chatId, refreshedState)
-  }
-  return true
+  return result
 }
 
 async function saveEntryEdits(
@@ -617,6 +611,9 @@ async function saveCustomPrompt(
   const index = settings.customPrompts.findIndex((prompt) => prompt.id === incoming.id)
   if (index < 0) throw new Error('Only duplicated or custom prompts can be edited.')
   if (!incoming.name.trim()) throw new Error('Prompt name cannot be empty.')
+  if (!incoming.userPrompt.includes(INPUT_PLACEHOLDER)) {
+    throw new Error(`User prompt must include ${INPUT_PLACEHOLDER} before it can be saved.`)
+  }
   const original = settings.customPrompts[index]
   settings.customPrompts[index] = {
     ...original,
@@ -720,11 +717,14 @@ async function handleFrontendRequest(payload: FrontendRequest, userId: string): 
       if (typeof payload.entryId !== 'string' || !payload.entryId) {
         throw new Error('Invalid summary entry.')
       }
-      const saved = await editEntry(chatId, payload.entryId, userId)
+      if (typeof payload.value !== 'string') throw new Error('Invalid summary draft.')
+      const result = await editEntry(chatId, payload.entryId, payload.value, userId)
       spindle.sendToFrontend({
         type: 'entry_editor_closed',
+        chatId,
         entryId: payload.entryId,
-        saved,
+        text: result.text,
+        cancelled: result.cancelled,
       }, userId)
       await publishSnapshot(userId)
       return
