@@ -351,20 +351,38 @@ const STYLES = `
   background: var(--lumiverse-primary-contrast, #fff);
 }
 .summaryplus-regex-ghost {
-  border-color: var(--lumiverse-primary, var(--sp-accent));
-  border-style: dashed; opacity: .42;
+  opacity: 1 !important;
+  border: 1px dashed var(--lumiverse-primary-050, var(--lumiverse-primary, var(--sp-accent))) !important;
+  border-radius: var(--lumiverse-radius, 8px);
+  background:
+    linear-gradient(
+      var(--lumiverse-primary-010, color-mix(in srgb, var(--sp-accent) 10%, transparent)),
+      var(--lumiverse-primary-010, color-mix(in srgb, var(--sp-accent) 10%, transparent))
+    ),
+    var(--lumiverse-bg-deep, var(--sp-secondary)) !important;
 }
+.summaryplus-regex-ghost > * { visibility: hidden !important; }
 .summaryplus-regex-chosen {
-  border-color: var(--lumiverse-primary, var(--sp-accent));
+  border-color: var(--lumiverse-primary-050, var(--lumiverse-primary, var(--sp-accent))) !important;
 }
 .summaryplus-regex-active,
 .summaryplus-regex-fallback {
-  border-color: var(--lumiverse-primary, var(--sp-accent));
-  background: var(--lumiverse-elevated, var(--sp-secondary-hover));
-  box-shadow: var(--lumiverse-shadow-lg, 0 10px 28px rgba(0, 0, 0, .28));
+  opacity: 1 !important;
+  border: 1px solid var(--lumiverse-primary-050, var(--lumiverse-primary, var(--sp-accent))) !important;
+  border-radius: var(--lumiverse-radius, 8px);
+  background:
+    linear-gradient(
+      var(--lumiverse-fill-subtle, rgba(128, 128, 128, .12)),
+      var(--lumiverse-fill-subtle, rgba(128, 128, 128, .12))
+    ),
+    var(--lumiverse-bg-deep, var(--sp-secondary)) !important;
+  box-shadow: var(--lumiverse-shadow-lg, 0 12px 30px rgba(0, 0, 0, .38));
 }
+.summaryplus-regex-fallback { pointer-events: none !important; z-index: 10020 !important; }
 .summaryplus-regex-is-dragging { cursor: grabbing; }
-.summaryplus-regex-is-dragging * { cursor: grabbing !important; }
+.summaryplus-regex-is-dragging * {
+  cursor: grabbing !important; user-select: none !important; -webkit-user-select: none !important;
+}
 .summaryplus-sr-only {
   position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0);
   clip-path: inset(50%); margin: -1px; padding: 0; border: 0; white-space: nowrap;
