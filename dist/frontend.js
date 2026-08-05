@@ -2301,6 +2301,10 @@ var EXPAND_ICON = `
 <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
   <path d="M8.5 4.5h-4v4M15.5 4.5h4v4M19.5 15.5v4h-4M4.5 15.5v4h4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>`;
+var EDITOR_EXPAND_ICON = `
+<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <path d="M15 3h6v6M21 3l-7 7M3 21l7-7M9 21H3v-6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>`;
 var REGENERATE_ICON = `
 <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
   <path d="M19.2 8.5A7.5 7.5 0 1 0 19 16M19.2 4.5v4h-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
@@ -2533,6 +2537,29 @@ var STYLES = `
 .summaryplus-input, .summaryplus-select { height: 36px; padding: 0 9px; }
 .summaryplus-input::placeholder { color: var(--lumiverse-text-hint, var(--sp-muted)); opacity: 1; }
 .summaryplus-textarea:read-only, .summaryplus-input:read-only { opacity: .72; cursor: default; }
+.summaryplus-expandable-textarea { position: relative; width: 100%; }
+.summaryplus-expandable-textarea > .summaryplus-textarea { display: block; width: 100%; }
+.summaryplus-prompt-expand {
+  appearance: none; position: absolute; top: 5px; right: 5px; z-index: 1;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: var(--lumiverse-btn-icon-sm, 28px); height: var(--lumiverse-btn-icon-sm, 28px);
+  border: 1px solid var(--lumiverse-border, var(--sp-border));
+  border-radius: var(--lumiverse-radius-sm, 5px); padding: 6px;
+  background: var(--lumiverse-bg, var(--sp-surface)); color: var(--lumiverse-text-dim, var(--sp-muted));
+  cursor: pointer; opacity: 0;
+  transition:
+    color var(--lumiverse-transition-fast, .15s ease),
+    border-color var(--lumiverse-transition-fast, .15s ease),
+    opacity var(--lumiverse-transition-fast, .15s ease);
+}
+.summaryplus-prompt-expand svg { display: block; width: 100%; height: 100%; }
+.summaryplus-expandable-textarea:hover .summaryplus-prompt-expand,
+.summaryplus-expandable-textarea:focus-within .summaryplus-prompt-expand { opacity: 1; }
+.summaryplus-prompt-expand:hover:not(:disabled) {
+  color: var(--lumiverse-primary-text, var(--lumiverse-primary, var(--sp-accent)));
+  border-color: var(--lumiverse-primary, var(--sp-accent));
+}
+.summaryplus-prompt-expand:disabled { cursor: not-allowed; opacity: .48; }
 .summaryplus-empty { padding: 30px 18px; border: 1px dashed var(--sp-secondary-border); border-radius: var(--lumiverse-radius-lg, 12px); background: var(--sp-secondary); text-align: center; }
 .summaryplus-empty strong { display: block; margin-bottom: 5px; font-size: 13px; }
 .summaryplus-section { display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--lumiverse-border, var(--sp-border)); border-radius: var(--lumiverse-radius-lg, 12px); background: var(--lumiverse-fill-subtle, var(--sp-surface-subtle)); }
@@ -2683,6 +2710,7 @@ var STYLES = `
 }
 @media (any-hover: none) {
   .summaryplus-entry-actions { opacity: 1; }
+  .summaryplus-prompt-expand { opacity: 1; }
   .summaryplus-regex-drag { width: 44px; height: 44px; padding: 11px; }
 }
 @media (max-width: 370px) {
@@ -2784,6 +2812,7 @@ function setup(ctx) {
   let editingEntryId = null;
   let regeneratingEntryId = null;
   let deletingEntryId = null;
+  let editingPromptField = null;
   let draftChatId = null;
   let regexSortable = null;
   const entryDrafts = new Map;
@@ -2947,6 +2976,9 @@ function setup(ctx) {
     for (const key of promptDrafts.keys()) {
       if (!currentPromptIds.has(key))
         promptDrafts.delete(key);
+    }
+    if (editingPromptField && !currentPromptIds.has(editingPromptField.promptId)) {
+      editingPromptField = null;
     }
   };
   const renderNav = () => {
@@ -3297,14 +3329,18 @@ function setup(ctx) {
       systemPrompt.value = draft.systemPrompt;
       systemPrompt.readOnly = selected.builtIn;
       systemPrompt.rows = 8;
-      systemField.appendChild(systemPrompt);
+      const systemPromptWrapper = element("div", "summaryplus-expandable-textarea");
+      systemPromptWrapper.appendChild(systemPrompt);
+      systemField.appendChild(systemPromptWrapper);
       const userField = element("label", "summaryplus-field");
       userField.appendChild(element("span", "summaryplus-label", "User prompt"));
       const userPrompt = element("textarea", "summaryplus-textarea");
       userPrompt.value = draft.userPrompt;
       userPrompt.readOnly = selected.builtIn;
       userPrompt.rows = 5;
-      userField.appendChild(userPrompt);
+      const userPromptWrapper = element("div", "summaryplus-expandable-textarea");
+      userPromptWrapper.appendChild(userPrompt);
+      userField.appendChild(userPromptWrapper);
       const updatePromptDraft = () => {
         promptDrafts.set(selected.id, {
           name: promptName.value,
@@ -3320,6 +3356,28 @@ function setup(ctx) {
       promptName.addEventListener("input", updatePromptDraft);
       systemPrompt.addEventListener("input", updatePromptDraft);
       userPrompt.addEventListener("input", updatePromptDraft);
+      const addExpandedEditorButton = (wrapper, field, input, label) => {
+        const expandButton = element("button", "summaryplus-prompt-expand");
+        expandButton.type = "button";
+        expandButton.disabled = selected.builtIn || editingPromptField !== null;
+        expandButton.title = "Expand editor";
+        expandButton.setAttribute("aria-label", `Expand ${label} editor`);
+        expandButton.innerHTML = EDITOR_EXPAND_ICON;
+        expandButton.addEventListener("click", () => {
+          updatePromptDraft();
+          editingPromptField = { promptId: selected.id, field };
+          render();
+          send({
+            type: "edit_prompt_field",
+            promptId: selected.id,
+            field,
+            value: input.value
+          });
+        });
+        wrapper.appendChild(expandButton);
+      };
+      addExpandedEditorButton(systemPromptWrapper, "systemPrompt", systemPrompt, "System prompt");
+      addExpandedEditorButton(userPromptWrapper, "userPrompt", userPrompt, "User prompt");
       promptSection.append(nameField, systemField, userField);
       if (!selected.builtIn) {
         savePromptButton = button("Save prompt", () => {
@@ -3542,8 +3600,31 @@ function setup(ctx) {
       return;
     if (payload.type === "action_error") {
       editingEntryId = null;
+      editingPromptField = null;
       regeneratingEntryId = null;
       deletingEntryId = null;
+      render();
+      return;
+    }
+    if (payload.type === "prompt_editor_closed") {
+      const matchesEditor = editingPromptField?.promptId === payload.promptId && editingPromptField.field === payload.field;
+      if (!matchesEditor)
+        return;
+      editingPromptField = null;
+      if (!payload.cancelled) {
+        const prompt = snapshot?.prompts.find((candidate) => candidate.id === payload.promptId);
+        if (prompt) {
+          const draft = promptDrafts.get(prompt.id) ?? {
+            name: prompt.name,
+            systemPrompt: prompt.systemPrompt,
+            userPrompt: prompt.userPrompt
+          };
+          promptDrafts.set(prompt.id, {
+            ...draft,
+            [payload.field]: payload.text
+          });
+        }
+      }
       render();
       return;
     }

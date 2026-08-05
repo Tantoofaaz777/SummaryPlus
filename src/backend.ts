@@ -74,6 +74,12 @@ type FrontendRequest =
   | { type: 'unhide_summaryplus_messages' }
   | { type: 'save_entries'; entries: Array<{ id: string; content: string }> }
   | { type: 'save_settings'; settings: Partial<SummaryPlusSettings> }
+  | {
+    type: 'edit_prompt_field'
+    promptId: string
+    field: 'systemPrompt' | 'userPrompt'
+    value: string
+  }
   | { type: 'save_prompt'; prompt: Pick<PromptDefinition, 'id' | 'name' | 'systemPrompt' | 'userPrompt'> }
   | { type: 'new_prompt'; level: SummaryLevel }
   | { type: 'duplicate_prompt'; promptId: string }
@@ -1505,6 +1511,27 @@ async function saveCustomPrompt(
   await setSettings(settings, userId)
 }
 
+async function editPromptField(
+  promptId: string,
+  field: 'systemPrompt' | 'userPrompt',
+  value: string,
+  userId?: string,
+): Promise<{ text: string; cancelled: boolean }> {
+  const settings = await getSettings(userId)
+  const prompt = settings.customPrompts.find((candidate) => candidate.id === promptId)
+  if (!prompt) throw new Error('Duplicate the protected prompt before editing it.')
+
+  const fieldLabel = field === 'systemPrompt' ? 'System Prompt' : 'User Prompt'
+  return spindle.textEditor.open({
+    title: `${prompt.name} — ${fieldLabel}`,
+    value,
+    placeholder: field === 'systemPrompt'
+      ? 'Write the system instructions for this summary level...'
+      : `Write the user prompt and include ${INPUT_PLACEHOLDER}...`,
+    userId,
+  })
+}
+
 async function createCustomPrompt(level: SummaryLevel, userId?: string): Promise<void> {
   const settings = await getSettings(userId)
   const createdAt = now()
@@ -1700,6 +1727,32 @@ async function handleFrontendRequest(payload: FrontendRequest, userId: string): 
       await saveGlobalSettings(payload.settings, userId)
       await publishSnapshot(userId)
       return
+    case 'edit_prompt_field': {
+      if (
+        payload.field !== 'systemPrompt'
+        && payload.field !== 'userPrompt'
+      ) {
+        throw new Error('Invalid prompt field.')
+      }
+      if (typeof payload.promptId !== 'string' || !payload.promptId) {
+        throw new Error('Invalid prompt.')
+      }
+      if (typeof payload.value !== 'string') throw new Error('Invalid prompt draft.')
+      const result = await editPromptField(
+        payload.promptId,
+        payload.field,
+        payload.value,
+        userId,
+      )
+      spindle.sendToFrontend({
+        type: 'prompt_editor_closed',
+        promptId: payload.promptId,
+        field: payload.field,
+        text: result.text,
+        cancelled: result.cancelled,
+      }, userId)
+      return
+    }
     case 'save_prompt':
       await saveCustomPrompt(payload.prompt, userId)
       publishActionSuccess('Prompt saved.', userId)

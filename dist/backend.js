@@ -1851,6 +1851,19 @@ async function saveCustomPrompt(incoming, userId) {
   };
   await setSettings(settings, userId);
 }
+async function editPromptField(promptId, field, value, userId) {
+  const settings = await getSettings(userId);
+  const prompt = settings.customPrompts.find((candidate) => candidate.id === promptId);
+  if (!prompt)
+    throw new Error("Duplicate the protected prompt before editing it.");
+  const fieldLabel = field === "systemPrompt" ? "System Prompt" : "User Prompt";
+  return spindle.textEditor.open({
+    title: `${prompt.name} \u2014 ${fieldLabel}`,
+    value,
+    placeholder: field === "systemPrompt" ? "Write the system instructions for this summary level..." : `Write the user prompt and include ${INPUT_PLACEHOLDER}...`,
+    userId
+  });
+}
 async function createCustomPrompt(level, userId) {
   const settings = await getSettings(userId);
   const createdAt = now();
@@ -2038,6 +2051,25 @@ async function handleFrontendRequest(payload, userId) {
       await saveGlobalSettings(payload.settings, userId);
       await publishSnapshot(userId);
       return;
+    case "edit_prompt_field": {
+      if (payload.field !== "systemPrompt" && payload.field !== "userPrompt") {
+        throw new Error("Invalid prompt field.");
+      }
+      if (typeof payload.promptId !== "string" || !payload.promptId) {
+        throw new Error("Invalid prompt.");
+      }
+      if (typeof payload.value !== "string")
+        throw new Error("Invalid prompt draft.");
+      const result = await editPromptField(payload.promptId, payload.field, payload.value, userId);
+      spindle.sendToFrontend({
+        type: "prompt_editor_closed",
+        promptId: payload.promptId,
+        field: payload.field,
+        text: result.text,
+        cancelled: result.cancelled
+      }, userId);
+      return;
+    }
     case "save_prompt":
       await saveCustomPrompt(payload.prompt, userId);
       publishActionSuccess("Prompt saved.", userId);

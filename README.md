@@ -128,6 +128,8 @@ Retries are additional attempts after the initial call. SummaryPlus imposes no a
 
 Chapter, Arc, and Volume each have an independent protected default prompt with separate System and User fields. Default prompts cannot be edited or deleted; duplicate one to create a customizable copy. Custom prompts can be renamed, duplicated, selected, edited, and deleted.
 
+Editable System and User prompt fields include a SceneMap-style expand button that opens Lumiverse's native full-screen text editor. Confirming the expanded editor updates only the local prompt draft; **Save prompt** remains required to persist it.
+
 The User prompt must contain the private placeholder:
 
 ```text
