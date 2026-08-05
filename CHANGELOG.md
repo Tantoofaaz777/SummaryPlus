@@ -12,3 +12,4 @@
 - Added independently enabled and reorderable Lumiverse prompt-regex preprocessing for Chapter sources.
 - Fixed regex-permission refreshes for operator-scoped Lumiverse installations.
 - Fixed regex dragging to keep the floating row opaque and show a distinct dashed drop placeholder.
+- Darkened configuration containers with the same subtle Lumiverse surface used by SceneMap.

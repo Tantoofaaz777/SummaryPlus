@@ -2514,7 +2514,7 @@ var STYLES = `
 .summaryplus-textarea:read-only, .summaryplus-input:read-only { opacity: .72; cursor: default; }
 .summaryplus-empty { padding: 30px 18px; border: 1px dashed var(--sp-secondary-border); border-radius: var(--lumiverse-radius-lg, 12px); background: var(--sp-secondary); text-align: center; }
 .summaryplus-empty strong { display: block; margin-bottom: 5px; font-size: 13px; }
-.summaryplus-section { display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--sp-secondary-border); border-radius: var(--lumiverse-radius-lg, 12px); background: var(--sp-secondary); }
+.summaryplus-section { display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--lumiverse-border, var(--sp-border)); border-radius: var(--lumiverse-radius-lg, 12px); background: var(--lumiverse-fill-subtle, var(--sp-surface-subtle)); }
 .summaryplus-section-title { margin: 0; font-size: 13px; font-weight: 750; }
 .summaryplus-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .summaryplus-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
