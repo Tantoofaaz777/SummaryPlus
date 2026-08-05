@@ -1289,7 +1289,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     content.id = 'summaryplus-tabpanel'
     content.setAttribute('role', 'tabpanel')
     content.setAttribute('aria-labelledby', 'summaryplus-tab-settings')
-    const intro = element('div')
+    const intro = element('div', 'summaryplus-screen-header')
     intro.append(
       element('div', 'summaryplus-eyebrow', 'Configuration'),
       element('h2', 'summaryplus-title', 'Summary engine'),

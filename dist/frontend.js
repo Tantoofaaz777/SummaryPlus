@@ -3343,7 +3343,7 @@ function setup(ctx) {
     content.id = "summaryplus-tabpanel";
     content.setAttribute("role", "tabpanel");
     content.setAttribute("aria-labelledby", "summaryplus-tab-settings");
-    const intro = element("div");
+    const intro = element("div", "summaryplus-screen-header");
     intro.append(element("div", "summaryplus-eyebrow", "Configuration"), element("h2", "summaryplus-title", "Summary engine"));
     content.appendChild(intro);
     const settings = data.settings;
