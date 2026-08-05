@@ -5,6 +5,7 @@ import {
   createChatState,
   createDefaultSettings,
   deleteActiveEntry,
+  estimatedStreamTokens,
   hasValidContextPlaceholders,
   macroValue,
   normalizeSettings,
@@ -216,6 +217,15 @@ describe('original source lookup', () => {
     ]
 
     expect(orderedSourceItems(['m1', 'm2', 'm3'], candidates)).toBeNull()
+  })
+})
+
+describe('streaming token estimates', () => {
+  test('uses the same transparent character-based estimate as Threadverse', () => {
+    expect(estimatedStreamTokens(0)).toBe(0)
+    expect(estimatedStreamTokens(1)).toBe(1)
+    expect(estimatedStreamTokens(4)).toBe(1)
+    expect(estimatedStreamTokens(5)).toBe(2)
   })
 })
 

@@ -263,6 +263,9 @@ function sourceText(items) {
 
 `);
 }
+function estimatedStreamTokens(characterCount) {
+  return Math.ceil(Math.max(0, characterCount) / 4);
+}
 function orderedSourceItems(sourceIds, candidates) {
   const candidatesById = new Map(candidates.map((candidate) => [String(candidate.id), candidate]));
   const ordered = [];
@@ -363,6 +366,7 @@ class ConfigurationError extends Error {
 var processingChats = new Set;
 var queuedChats = new Set;
 var controllers = new Map;
+var generationProgressByChat = new Map;
 function now() {
   return new Date().toISOString();
 }
@@ -455,6 +459,7 @@ async function createSnapshot(userId) {
       prompts: allPrompts(settings),
       connections,
       processing: false,
+      generationProgress: null,
       pendingMessageCount: 0,
       activeCounts: entryCounts(null)
     };
@@ -470,6 +475,7 @@ async function createSnapshot(userId) {
     prompts: allPrompts(settings),
     connections,
     processing: processingChats.has(chatId),
+    generationProgress: generationProgressByChat.get(chatId) ?? null,
     pendingMessageCount: pendingMessages(messages, state.processedMessageIds).length,
     activeCounts: entryCounts(state)
   };
@@ -511,16 +517,20 @@ function waitBeforeRetry(signal) {
     signal.addEventListener("abort", onAbort, { once: true });
   });
 }
-function generationContent(result) {
-  if (typeof result === "string")
-    return result.trim();
-  if (result && typeof result === "object" && typeof result.content === "string") {
-    return result.content.trim();
+function publishGenerationProgress(chatId, progress, userId) {
+  generationProgressByChat.set(chatId, progress);
+  try {
+    spindle.sendToFrontend({
+      type: "generation_progress",
+      chatId,
+      progress
+    }, userId);
+  } catch (error) {
+    spindle.log.warn(`SummaryPlus could not publish generation progress for chat ${chatId}: ${errorMessage(error)}`);
   }
-  return "";
 }
-async function generateSummary(level, input, contextEntries, settings, signal, userId) {
-  const prompt = selectedPrompt(settings, level);
+async function generateSummary(chatId, target, input, contextEntries, settings, signal, userId) {
+  const prompt = selectedPrompt(settings, target.level);
   if (!prompt.userPrompt.includes(INPUT_PLACEHOLDER)) {
     throw new ConfigurationError(`${prompt.name} must include ${INPUT_PLACEHOLDER} in its user prompt.`);
   }
@@ -552,8 +562,41 @@ async function generateSummary(level, input, contextEntries, settings, signal, u
   for (let attempt = 0;attempt <= settings.retries; attempt += 1) {
     if (signal.aborted)
       throw new ProcessingCancelledError;
+    let outputCharacters = 0;
+    let reasoningCharacters = 0;
+    let lastProgressAt = 0;
+    const publishProgress = (force = false) => {
+      const publishedAt = Date.now();
+      if (!force && publishedAt - lastProgressAt < 250)
+        return;
+      lastProgressAt = publishedAt;
+      publishGenerationProgress(chatId, {
+        ...target,
+        outputTokens: estimatedStreamTokens(outputCharacters),
+        reasoningTokens: estimatedStreamTokens(reasoningCharacters),
+        attempt: attempt + 1,
+        maxAttempts: settings.retries + 1
+      }, userId);
+    };
+    publishProgress(true);
     try {
-      const content = generationContent(await spindle.generate.quiet(request));
+      let content = "";
+      for await (const chunk of spindle.generate.quietStream(request)) {
+        if (chunk.type === "token") {
+          outputCharacters += chunk.token.length;
+          publishProgress();
+        } else if (chunk.type === "reasoning") {
+          reasoningCharacters += chunk.token.length;
+          publishProgress();
+        } else {
+          content = chunk.content.trim();
+          outputCharacters = chunk.content.length;
+          if (typeof chunk.reasoning === "string") {
+            reasoningCharacters = chunk.reasoning.length;
+          }
+          publishProgress(true);
+        }
+      }
       if (!content)
         throw new Error("The provider returned an empty response.");
       return content;
@@ -586,7 +629,12 @@ async function createChapter(chatId, state, settings, signal, userId) {
     return "none";
   let content;
   try {
-    content = await generateSummary("chapter", sourceText(batch), contextEntriesBefore(state, state.nextChapterOrder), settings, signal, userId);
+    content = await generateSummary(chatId, {
+      action: "create",
+      level: "chapter",
+      orderStart: state.nextChapterOrder,
+      orderEnd: state.nextChapterOrder
+    }, sourceText(batch), contextEntriesBefore(state, state.nextChapterOrder), settings, signal, userId);
   } catch (error) {
     if (isAbort(error))
       throw error;
@@ -636,10 +684,16 @@ async function createPromotion(chatId, targetLevel, state, settings, signal, use
   const batch = selectPromotionBatch(state, sourceLevel, size, delay);
   if (!batch)
     return "none";
+  const orderStart = Math.min(...batch.map((entry) => entry.orderStart));
+  const orderEnd = Math.max(...batch.map((entry) => entry.orderEnd));
   let content;
   try {
-    const orderStart = Math.min(...batch.map((entry) => entry.orderStart));
-    content = await generateSummary(targetLevel, sourceText(batch), contextEntriesBefore(state, orderStart), settings, signal, userId);
+    content = await generateSummary(chatId, {
+      action: "create",
+      level: targetLevel,
+      orderStart,
+      orderEnd
+    }, sourceText(batch), contextEntriesBefore(state, orderStart), settings, signal, userId);
   } catch (error) {
     if (isAbort(error))
       throw error;
@@ -654,8 +708,8 @@ async function createPromotion(chatId, targetLevel, state, settings, signal, use
     id: id(targetLevel),
     level: targetLevel,
     content,
-    orderStart: Math.min(...batch.map((entry) => entry.orderStart)),
-    orderEnd: Math.max(...batch.map((entry) => entry.orderEnd)),
+    orderStart,
+    orderEnd,
     active: true,
     sourceIds: batch.map((entry) => entry.id),
     createdAt,
@@ -707,6 +761,7 @@ async function runProcessing(chatId, userId) {
     return;
   }
   processingChats.add(chatId);
+  generationProgressByChat.delete(chatId);
   const controller = new AbortController;
   controllers.set(chatId, controller);
   await publishSnapshot(userId);
@@ -723,6 +778,7 @@ async function runProcessing(chatId, userId) {
     processingChats.delete(chatId);
     queuedChats.delete(chatId);
     controllers.delete(chatId);
+    generationProgressByChat.delete(chatId);
     await publishSnapshot(userId);
   }
 }
@@ -844,7 +900,12 @@ async function regenerateEntry(chatId, entryId, signal, userId) {
   }
   let content;
   try {
-    content = await generateSummary(entry.level, sourceText(chapterSources ?? summarySources ?? []), contextEntriesBefore(state, entry.orderStart), settings, signal, userId);
+    content = await generateSummary(chatId, {
+      action: "regenerate",
+      level: entry.level,
+      orderStart: entry.orderStart,
+      orderEnd: entry.orderEnd
+    }, sourceText(chapterSources ?? summarySources ?? []), contextEntriesBefore(state, entry.orderStart), settings, signal, userId);
   } catch (error) {
     if (isAbort(error))
       throw error;
@@ -887,6 +948,7 @@ async function runRegeneration(chatId, entryId, userId) {
   }
   processingChats.add(chatId);
   queuedChats.delete(chatId);
+  generationProgressByChat.delete(chatId);
   const controller = new AbortController;
   controllers.set(chatId, controller);
   await publishSnapshot(userId);
@@ -908,6 +970,7 @@ async function runRegeneration(chatId, entryId, userId) {
     processingChats.delete(chatId);
     queuedChats.delete(chatId);
     controllers.delete(chatId);
+    generationProgressByChat.delete(chatId);
     await publishSnapshot(userId);
   }
 }

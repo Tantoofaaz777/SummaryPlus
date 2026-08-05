@@ -29,9 +29,11 @@ import {
   selectedPrompt,
   selectPromotionBatch,
   sourceText,
+  estimatedStreamTokens,
   type ChatMessageLike,
   type ChatState,
   type ConnectionOption,
+  type GenerationProgress,
   type PromptDefinition,
   type Snapshot,
   type SummaryEntry,
@@ -73,6 +75,7 @@ class ConfigurationError extends Error {}
 const processingChats = new Set<string>()
 const queuedChats = new Set<string>()
 const controllers = new Map<string, AbortController>()
+const generationProgressByChat = new Map<string, GenerationProgress>()
 
 function now(): string {
   return new Date().toISOString()
@@ -191,6 +194,7 @@ async function createSnapshot(userId?: string): Promise<Snapshot> {
       prompts: allPrompts(settings),
       connections,
       processing: false,
+      generationProgress: null,
       pendingMessageCount: 0,
       activeCounts: entryCounts(null),
     }
@@ -207,6 +211,7 @@ async function createSnapshot(userId?: string): Promise<Snapshot> {
     prompts: allPrompts(settings),
     connections,
     processing: processingChats.has(chatId),
+    generationProgress: generationProgressByChat.get(chatId) ?? null,
     pendingMessageCount: pendingMessages(messages, state.processedMessageIds).length,
     activeCounts: entryCounts(state),
   }
@@ -252,27 +257,42 @@ function waitBeforeRetry(signal: AbortSignal): Promise<void> {
   })
 }
 
-function generationContent(result: unknown): string {
-  if (typeof result === 'string') return result.trim()
-  if (
-    result
-    && typeof result === 'object'
-    && typeof (result as { content?: unknown }).content === 'string'
-  ) {
-    return (result as { content: string }).content.trim()
+interface GenerationTarget {
+  action: GenerationProgress['action']
+  level: SummaryLevel
+  orderStart: number
+  orderEnd: number
+}
+
+function publishGenerationProgress(
+  chatId: string,
+  progress: GenerationProgress,
+  userId?: string,
+): void {
+  generationProgressByChat.set(chatId, progress)
+  try {
+    spindle.sendToFrontend({
+      type: 'generation_progress',
+      chatId,
+      progress,
+    }, userId)
+  } catch (error) {
+    spindle.log.warn(
+      `SummaryPlus could not publish generation progress for chat ${chatId}: ${errorMessage(error)}`,
+    )
   }
-  return ''
 }
 
 async function generateSummary(
-  level: SummaryLevel,
+  chatId: string,
+  target: GenerationTarget,
   input: string,
   contextEntries: SummaryEntry[],
   settings: SummaryPlusSettings,
   signal: AbortSignal,
   userId?: string,
 ): Promise<string> {
-  const prompt = selectedPrompt(settings, level)
+  const prompt = selectedPrompt(settings, target.level)
   if (!prompt.userPrompt.includes(INPUT_PLACEHOLDER)) {
     throw new ConfigurationError(
       `${prompt.name} must include ${INPUT_PLACEHOLDER} in its user prompt.`,
@@ -309,8 +329,41 @@ async function generateSummary(
   let lastFailure: unknown = new Error('The provider returned an empty response.')
   for (let attempt = 0; attempt <= settings.retries; attempt += 1) {
     if (signal.aborted) throw new ProcessingCancelledError()
+    let outputCharacters = 0
+    let reasoningCharacters = 0
+    let lastProgressAt = 0
+    const publishProgress = (force = false) => {
+      const publishedAt = Date.now()
+      if (!force && publishedAt - lastProgressAt < 250) return
+      lastProgressAt = publishedAt
+      publishGenerationProgress(chatId, {
+        ...target,
+        outputTokens: estimatedStreamTokens(outputCharacters),
+        reasoningTokens: estimatedStreamTokens(reasoningCharacters),
+        attempt: attempt + 1,
+        maxAttempts: settings.retries + 1,
+      }, userId)
+    }
+    publishProgress(true)
+
     try {
-      const content = generationContent(await spindle.generate.quiet(request))
+      let content = ''
+      for await (const chunk of spindle.generate.quietStream(request)) {
+        if (chunk.type === 'token') {
+          outputCharacters += chunk.token.length
+          publishProgress()
+        } else if (chunk.type === 'reasoning') {
+          reasoningCharacters += chunk.token.length
+          publishProgress()
+        } else {
+          content = chunk.content.trim()
+          outputCharacters = chunk.content.length
+          if (typeof chunk.reasoning === 'string') {
+            reasoningCharacters = chunk.reasoning.length
+          }
+          publishProgress(true)
+        }
+      }
       if (!content) throw new Error('The provider returned an empty response.')
       return content
     } catch (error) {
@@ -354,7 +407,13 @@ async function createChapter(
   let content: string
   try {
     content = await generateSummary(
-      'chapter',
+      chatId,
+      {
+        action: 'create',
+        level: 'chapter',
+        orderStart: state.nextChapterOrder,
+        orderEnd: state.nextChapterOrder,
+      },
       sourceText(batch),
       contextEntriesBefore(state, state.nextChapterOrder),
       settings,
@@ -428,12 +487,19 @@ async function createPromotion(
   const delay = targetLevel === 'arc' ? settings.chapterDelay : settings.arcDelay
   const batch = selectPromotionBatch(state, sourceLevel, size, delay)
   if (!batch) return 'none'
+  const orderStart = Math.min(...batch.map((entry) => entry.orderStart))
+  const orderEnd = Math.max(...batch.map((entry) => entry.orderEnd))
 
   let content: string
   try {
-    const orderStart = Math.min(...batch.map((entry) => entry.orderStart))
     content = await generateSummary(
-      targetLevel,
+      chatId,
+      {
+        action: 'create',
+        level: targetLevel,
+        orderStart,
+        orderEnd,
+      },
       sourceText(batch),
       contextEntriesBefore(state, orderStart),
       settings,
@@ -454,8 +520,8 @@ async function createPromotion(
     id: id(targetLevel),
     level: targetLevel,
     content,
-    orderStart: Math.min(...batch.map((entry) => entry.orderStart)),
-    orderEnd: Math.max(...batch.map((entry) => entry.orderEnd)),
+    orderStart,
+    orderEnd,
     active: true,
     sourceIds: batch.map((entry) => entry.id),
     createdAt,
@@ -531,6 +597,7 @@ async function runProcessing(chatId: string, userId?: string): Promise<void> {
   }
 
   processingChats.add(chatId)
+  generationProgressByChat.delete(chatId)
   const controller = new AbortController()
   controllers.set(chatId, controller)
   await publishSnapshot(userId)
@@ -548,6 +615,7 @@ async function runProcessing(chatId: string, userId?: string): Promise<void> {
     processingChats.delete(chatId)
     queuedChats.delete(chatId)
     controllers.delete(chatId)
+    generationProgressByChat.delete(chatId)
     await publishSnapshot(userId)
   }
 }
@@ -730,7 +798,13 @@ async function regenerateEntry(
   let content: string
   try {
     content = await generateSummary(
-      entry.level,
+      chatId,
+      {
+        action: 'regenerate',
+        level: entry.level,
+        orderStart: entry.orderStart,
+        orderEnd: entry.orderEnd,
+      },
       sourceText(chapterSources ?? summarySources ?? []),
       contextEntriesBefore(state, entry.orderStart),
       settings,
@@ -805,6 +879,7 @@ async function runRegeneration(
 
   processingChats.add(chatId)
   queuedChats.delete(chatId)
+  generationProgressByChat.delete(chatId)
   const controller = new AbortController()
   controllers.set(chatId, controller)
   await publishSnapshot(userId)
@@ -829,6 +904,7 @@ async function runRegeneration(
     processingChats.delete(chatId)
     queuedChats.delete(chatId)
     controllers.delete(chatId)
+    generationProgressByChat.delete(chatId)
     await publishSnapshot(userId)
   }
 }

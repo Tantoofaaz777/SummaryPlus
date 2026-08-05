@@ -3,6 +3,7 @@ import {
   LEVELS,
   activeEntries,
   createDefaultSettings,
+  type GenerationProgress,
   type PromptDefinition,
   type Snapshot,
   type SummaryEntry,
@@ -13,6 +14,7 @@ import {
 type BackendMessage =
   | { type: 'snapshot'; snapshot: Snapshot }
   | { type: 'action_error'; message: string }
+  | { type: 'generation_progress'; chatId: string; progress: GenerationProgress }
   | {
     type: 'entry_editor_closed'
     chatId: string
@@ -112,6 +114,36 @@ const STYLES = `
 .summaryplus-eyebrow { color: var(--sp-accent); font-size: 10px; font-weight: 800; letter-spacing: .13em; text-transform: uppercase; }
 .summaryplus-title { margin: 3px 0 2px; font-size: 18px; line-height: 1.25; font-weight: 750; }
 .summaryplus-copy, .summaryplus-help { color: var(--sp-muted); font-size: 12px; line-height: 1.55; }
+.summaryplus-generation {
+  display: grid; justify-items: center; gap: 9px; width: 100%; padding: 12px;
+  border: 1px solid var(--lumiverse-primary-050, var(--lumiverse-primary, var(--sp-accent)));
+  border-radius: var(--lumiverse-radius-md, 10px);
+  background: var(--lumiverse-primary-015, color-mix(in srgb, var(--sp-accent) 15%, transparent));
+  text-align: center;
+}
+.summaryplus-generation-status {
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  color: var(--lumiverse-primary-text, var(--lumiverse-primary, var(--sp-accent)));
+  font-size: 12px; font-weight: 650;
+}
+.summaryplus-generation-indicator {
+  width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%;
+  background: currentColor;
+  animation: summaryplus-generation-pulse 1.2s ease-in-out infinite;
+}
+.summaryplus-generation-dots { margin-left: 1px; white-space: nowrap; }
+.summaryplus-generation-dots span {
+  display: inline-block;
+  animation: summaryplus-dot-fade 1.2s ease-in-out infinite;
+}
+.summaryplus-generation-dots span:nth-child(2) { animation-delay: .16s; }
+.summaryplus-generation-dots span:nth-child(3) { animation-delay: .32s; }
+.summaryplus-generation-tokens,
+.summaryplus-generation-retry {
+  color: var(--sp-muted); font-size: 12px; font-variant-numeric: tabular-nums;
+}
+.summaryplus-generation-retry[hidden] { display: none; }
+.summaryplus-generation-cancel { width: 100%; }
 .summaryplus-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
 .summaryplus-stat { min-width: 0; padding: 8px 6px; border: 1px solid var(--sp-secondary-border); border-radius: var(--lumiverse-radius-md, 10px); background: var(--sp-secondary); text-align: center; }
 .summaryplus-stat strong { display: block; overflow: hidden; font-size: 15px; text-overflow: ellipsis; }
@@ -247,6 +279,23 @@ const STYLES = `
 .summaryplus-loading { display: flex; align-items: center; justify-content: center; min-height: 220px; color: var(--sp-muted); font-size: 12px; }
 .summaryplus-dot { width: 7px; height: 7px; margin-right: 8px; border-radius: 50%; background: var(--sp-accent); animation: summaryplus-pulse 1s ease-in-out infinite alternate; }
 @keyframes summaryplus-pulse { to { opacity: .28; transform: scale(.78); } }
+@keyframes summaryplus-generation-pulse {
+  0%, 100% { opacity: .72; }
+  50% { opacity: 1; }
+}
+@keyframes summaryplus-dot-fade {
+  0%, 20% { opacity: .2; transform: translateY(0); }
+  45% { opacity: 1; transform: translateY(-1px); }
+  80%, 100% { opacity: .2; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .summaryplus-generation-indicator,
+  .summaryplus-generation-dots span {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+}
 @media (any-hover: none) {
   .summaryplus-entry-actions { opacity: 1; }
 }
@@ -292,6 +341,36 @@ function isBackendMessage(payload: unknown): payload is BackendMessage {
 function entryTitle(entry: SummaryEntry): string {
   if (entry.level === 'chapter') return `Chapter ${entry.orderStart}`
   return `${LEVEL_LABEL[entry.level]} · Chapters ${entry.orderStart}-${entry.orderEnd}`
+}
+
+function generationSignature(progress: GenerationProgress | null): string {
+  if (!progress) return 'preparing'
+  return [
+    progress.action,
+    progress.level,
+    progress.orderStart,
+    progress.orderEnd,
+  ].join(':')
+}
+
+function generationTitle(progress: GenerationProgress | null): string {
+  if (!progress) return 'Preparing summaries'
+  const verb = progress.action === 'regenerate' ? 'Regenerating' : 'Creating'
+  const target = progress.level === 'chapter'
+    ? `Chapter ${progress.orderStart}`
+    : `${LEVEL_LABEL[progress.level]} · Chapters ${progress.orderStart}-${progress.orderEnd}`
+  return `${verb} ${target}`
+}
+
+function generationTokenText(progress: GenerationProgress | null): string {
+  const outputTokens = progress?.outputTokens ?? 0
+  const reasoningTokens = progress?.reasoningTokens ?? 0
+  return `~${outputTokens} output tokens · ~${reasoningTokens} reasoning tokens`
+}
+
+function generationRetryText(progress: GenerationProgress | null): string {
+  if (!progress || progress.attempt <= 1 || progress.maxAttempts <= 1) return ''
+  return `Retry ${progress.attempt - 1} of ${progress.maxAttempts - 1}`
 }
 
 function deleteEntryMessage(entry: SummaryEntry): string {
@@ -353,6 +432,23 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   const promptDrafts = new Map<string, Pick<PromptDefinition, 'name' | 'systemPrompt' | 'userPrompt'>>()
 
   const send = (payload: unknown) => ctx.sendToBackend(payload)
+
+  const updateGenerationProgressDom = (progress: GenerationProgress): boolean => {
+    const card = root.querySelector<HTMLElement>('[data-summaryplus-generation]')
+    if (!card || card.dataset.summaryplusGeneration !== generationSignature(progress)) {
+      return false
+    }
+    const title = card.querySelector<HTMLElement>('[data-summaryplus-generation-title]')
+    const tokens = card.querySelector<HTMLElement>('[data-summaryplus-generation-tokens]')
+    const retry = card.querySelector<HTMLElement>('[data-summaryplus-generation-retry]')
+    if (!title || !tokens || !retry) return false
+    title.textContent = generationTitle(progress)
+    tokens.textContent = generationTokenText(progress)
+    const retryText = generationRetryText(progress)
+    retry.textContent = retryText
+    retry.hidden = !retryText
+    return true
+  }
 
   const setScreen = (next: Screen, focusTab = false) => {
     screen = next
@@ -457,6 +553,47 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       )
       content.appendChild(empty)
       return content
+    }
+
+    if (data.processing) {
+      const progress = data.generationProgress
+      const generation = element('section', 'summaryplus-generation')
+      generation.dataset.summaryplusGeneration = generationSignature(progress)
+      generation.setAttribute('data-summaryplus-generation', '')
+      generation.setAttribute('aria-live', 'polite')
+
+      const status = element('div', 'summaryplus-generation-status')
+      const indicator = element('span', 'summaryplus-generation-indicator')
+      indicator.setAttribute('aria-hidden', 'true')
+      const title = element('span', '', generationTitle(progress))
+      title.setAttribute('data-summaryplus-generation-title', '')
+      const dots = element('span', 'summaryplus-generation-dots')
+      dots.setAttribute('aria-hidden', 'true')
+      dots.append(
+        element('span', '', '.'),
+        element('span', '', '.'),
+        element('span', '', '.'),
+      )
+      status.append(indicator, title, dots)
+
+      const tokens = element('div', 'summaryplus-generation-tokens', generationTokenText(progress))
+      tokens.setAttribute('data-summaryplus-generation-tokens', '')
+      const retryText = generationRetryText(progress)
+      const retry = element('div', 'summaryplus-generation-retry', retryText)
+      retry.setAttribute('data-summaryplus-generation-retry', '')
+      retry.hidden = !retryText
+
+      generation.append(
+        status,
+        retry,
+        tokens,
+        button(
+          'Cancel',
+          () => send({ type: 'cancel_processing' }),
+          'is-quiet summaryplus-generation-cancel',
+        ),
+      )
+      content.appendChild(generation)
     }
 
     const stats = element('div', 'summaryplus-stats')
@@ -706,23 +843,8 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         stack.appendChild(card)
       }
       content.appendChild(stack)
-
-      if (data.processing) {
-        const actions = element('div', 'summaryplus-actions')
-        actions.appendChild(button(
-          'Cancel',
-          () => send({ type: 'cancel_processing' }),
-        ))
-        content.appendChild(actions)
-      }
     }
 
-    if (data.processing && !entries.length) {
-      content.appendChild(button(
-        'Cancel processing',
-        () => send({ type: 'cancel_processing' }),
-      ))
-    }
     return content
   }
 
@@ -1093,6 +1215,16 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         }
       }
       render()
+      return
+    }
+    if (payload.type === 'generation_progress') {
+      if (!snapshot || snapshot.chatId !== payload.chatId) return
+      snapshot = {
+        ...snapshot,
+        processing: true,
+        generationProgress: payload.progress,
+      }
+      if (!updateGenerationProgressDom(payload.progress)) render()
       return
     }
     syncDrafts(payload.snapshot)

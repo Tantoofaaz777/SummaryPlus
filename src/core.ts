@@ -81,6 +81,17 @@ export interface ConnectionOption {
   isDefault?: boolean
 }
 
+export interface GenerationProgress {
+  action: 'create' | 'regenerate'
+  level: SummaryLevel
+  orderStart: number
+  orderEnd: number
+  outputTokens: number
+  reasoningTokens: number
+  attempt: number
+  maxAttempts: number
+}
+
 export interface Snapshot {
   chatId: string | null
   state: ChatState | null
@@ -88,6 +99,7 @@ export interface Snapshot {
   prompts: PromptDefinition[]
   connections: ConnectionOption[]
   processing: boolean
+  generationProgress: GenerationProgress | null
   pendingMessageCount: number
   activeCounts: Record<SummaryLevel, number>
 }
@@ -440,6 +452,10 @@ export function selectPromotionBatch(
 
 export function sourceText(items: Array<{ content: string }>): string {
   return items.map((item) => item.content).join('\n\n')
+}
+
+export function estimatedStreamTokens(characterCount: number): number {
+  return Math.ceil(Math.max(0, characterCount) / 4)
 }
 
 export function orderedSourceItems<T extends { id: string | number }>(
