@@ -198,6 +198,10 @@ function selectedPrompt(settings, level) {
 function activeEntries(state, level) {
   return state.entries.filter((entry) => entry.active && (!level || entry.level === level)).sort((left, right) => left.orderStart - right.orderStart || left.orderEnd - right.orderEnd || left.createdAt.localeCompare(right.createdAt));
 }
+function latestActiveEntry(state) {
+  const entries = activeEntries(state);
+  return entries[entries.length - 1] ?? null;
+}
 function macroValue(state, level) {
   if (!state)
     return "";
@@ -227,10 +231,13 @@ function sourceText(items) {
 `);
 }
 function deleteActiveEntry(state, entryId, deletedAt) {
-  const index = state.entries.findIndex((entry2) => entry2.id === entryId && entry2.active);
+  const latest = latestActiveEntry(state);
+  if (!latest || latest.id !== entryId)
+    return null;
+  const index = state.entries.findIndex((entry2) => entry2.id === latest.id);
   if (index < 0)
     return null;
-  const entry = state.entries[index];
+  const entry = latest;
   if (entry.level === "chapter") {
     const releasedMessageIds = new Set(entry.sourceIds);
     state.processedMessageIds = state.processedMessageIds.filter((id) => !releasedMessageIds.has(id));
@@ -730,9 +737,15 @@ async function deleteEntry(chatId, entryId) {
     throw new Error("Wait for processing to finish, or cancel it before deleting summaries.");
   }
   const state = await ensureState(chatId);
+  const requested = state.entries.find((entry) => entry.id === entryId && entry.active);
+  if (!requested)
+    throw new Error("This summary is no longer active.");
+  if (latestActiveEntry(state)?.id !== entryId) {
+    throw new Error("Delete newer summaries first. Only the most recent active summary can be deleted.");
+  }
   const result = deleteActiveEntry(state, entryId, now());
   if (!result)
-    throw new Error("This summary is no longer active.");
+    throw new Error("A newer summary appeared. Delete it first.");
   if (processingChats.has(chatId)) {
     throw new Error("Processing started before the summary could be deleted. Try again after it finishes.");
   }

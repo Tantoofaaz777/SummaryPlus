@@ -488,6 +488,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     }
 
     const allEntries = activeEntries(data.state)
+    const latestEntryId = allEntries[allEntries.length - 1]?.id
     const pendingEdits = allEntries.flatMap((entry) => {
       const content = entryDrafts.get(entry.id)
       return content !== undefined && content !== entry.content
@@ -589,38 +590,41 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         openButton.addEventListener('click', openEditor)
 
         const actions = element('div', 'summaryplus-entry-actions')
-        const deleteButton = element('button', 'summaryplus-entry-action is-delete')
-        deleteButton.type = 'button'
-        deleteButton.disabled = controlsDisabled
-        deleteButton.title = `Delete ${title}`
-        deleteButton.setAttribute('aria-label', `Delete ${title}`)
-        const deleteIcon = element('span', 'summaryplus-entry-icon')
-        deleteIcon.innerHTML = DELETE_ICON
-        deleteButton.appendChild(deleteIcon)
-        deleteButton.addEventListener('click', async () => {
-          deletingEntryId = entry.id
-          render()
-          let result: Awaited<ReturnType<typeof ctx.ui.showConfirm>>
-          try {
-            result = await ctx.ui.showConfirm({
-              title: `Delete ${LEVEL_LABEL[entry.level]}`,
-              message: deleteEntryMessage(entry),
-              variant: 'danger',
-              confirmLabel: 'Delete',
-            })
-          } catch {
-            deletingEntryId = null
+        if (entry.id === latestEntryId) {
+          const deleteButton = element('button', 'summaryplus-entry-action is-delete')
+          deleteButton.type = 'button'
+          deleteButton.disabled = controlsDisabled
+          deleteButton.title = `Delete ${title}`
+          deleteButton.setAttribute('aria-label', `Delete ${title}`)
+          const deleteIcon = element('span', 'summaryplus-entry-icon')
+          deleteIcon.innerHTML = DELETE_ICON
+          deleteButton.appendChild(deleteIcon)
+          deleteButton.addEventListener('click', async () => {
+            deletingEntryId = entry.id
             render()
-            return
-          }
-          if (!result.confirmed) {
-            deletingEntryId = null
-            render()
-            return
-          }
-          entryDrafts.delete(entry.id)
-          send({ type: 'delete_entry', entryId: entry.id })
-        })
+            let result: Awaited<ReturnType<typeof ctx.ui.showConfirm>>
+            try {
+              result = await ctx.ui.showConfirm({
+                title: `Delete ${LEVEL_LABEL[entry.level]}`,
+                message: deleteEntryMessage(entry),
+                variant: 'danger',
+                confirmLabel: 'Delete',
+              })
+            } catch {
+              deletingEntryId = null
+              render()
+              return
+            }
+            if (!result.confirmed) {
+              deletingEntryId = null
+              render()
+              return
+            }
+            entryDrafts.delete(entry.id)
+            send({ type: 'delete_entry', entryId: entry.id })
+          })
+          actions.appendChild(deleteButton)
+        }
 
         const expandButton = element('button', 'summaryplus-entry-action')
         expandButton.type = 'button'
@@ -632,7 +636,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         expandButton.appendChild(expandIcon)
         expandButton.addEventListener('click', openEditor)
 
-        actions.append(deleteButton, expandButton)
+        actions.appendChild(expandButton)
         card.append(openButton, actions)
         stack.appendChild(card)
       }

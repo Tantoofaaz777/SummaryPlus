@@ -14,6 +14,7 @@ import {
   entryCounts,
   isSameEntryBatch,
   isSameMessageBatch,
+  latestActiveEntry,
   macroValue,
   normalizeSettings,
   parseChatState,
@@ -606,8 +607,13 @@ async function deleteEntry(
     throw new Error('Wait for processing to finish, or cancel it before deleting summaries.')
   }
   const state = await ensureState(chatId)
+  const requested = state.entries.find((entry) => entry.id === entryId && entry.active)
+  if (!requested) throw new Error('This summary is no longer active.')
+  if (latestActiveEntry(state)?.id !== entryId) {
+    throw new Error('Delete newer summaries first. Only the most recent active summary can be deleted.')
+  }
   const result = deleteActiveEntry(state, entryId, now())
-  if (!result) throw new Error('This summary is no longer active.')
+  if (!result) throw new Error('A newer summary appeared. Delete it first.')
   if (processingChats.has(chatId)) {
     throw new Error('Processing started before the summary could be deleted. Try again after it finishes.')
   }

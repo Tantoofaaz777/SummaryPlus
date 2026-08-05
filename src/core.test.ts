@@ -126,6 +126,24 @@ describe('promotion and macros', () => {
 })
 
 describe('restorative deletion', () => {
+  test('only deletes active summaries from newest to oldest', () => {
+    const state = createChatState(true)
+    state.processedMessageIds = ['m9', 'm10']
+    state.entries = [
+      entry('a1', 'arc', 1, 8),
+      { ...entry('c9', 'chapter', 9), sourceIds: ['m9'] },
+      { ...entry('c10', 'chapter', 10), sourceIds: ['m10'] },
+    ]
+
+    expect(deleteActiveEntry(state, 'c9', '2026-02-01T00:00:00.000Z')).toBeNull()
+    expect(activeEntries(state).map((candidate) => candidate.id)).toEqual(['a1', 'c9', 'c10'])
+
+    expect(deleteActiveEntry(state, 'c10', '2026-02-01T00:00:00.000Z')?.level).toBe('chapter')
+    expect(deleteActiveEntry(state, 'c9', '2026-02-01T00:00:01.000Z')?.level).toBe('chapter')
+    expect(deleteActiveEntry(state, 'a1', '2026-02-01T00:00:02.000Z')?.level).toBe('arc')
+    expect(activeEntries(state)).toEqual([])
+  })
+
   test('deleting a Chapter releases its messages and preserves a reusable chronological slot', () => {
     const state = createChatState(true)
     state.processedMessageIds = ['m1', 'm2', 'm3']

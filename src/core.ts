@@ -352,6 +352,11 @@ export function activeEntries(
     ))
 }
 
+export function latestActiveEntry(state: ChatState): SummaryEntry | null {
+  const entries = activeEntries(state)
+  return entries[entries.length - 1] ?? null
+}
+
 export function macroValue(state: ChatState | null, level: SummaryLevel): string {
   if (!state) return ''
   return activeEntries(state, level).map((entry) => entry.content).join('\n\n')
@@ -400,10 +405,12 @@ export function deleteActiveEntry(
   entryId: string,
   deletedAt: string,
 ): DeleteEntryResult | null {
-  const index = state.entries.findIndex((entry) => entry.id === entryId && entry.active)
+  const latest = latestActiveEntry(state)
+  if (!latest || latest.id !== entryId) return null
+  const index = state.entries.findIndex((entry) => entry.id === latest.id)
   if (index < 0) return null
 
-  const entry = state.entries[index]
+  const entry = latest
   if (entry.level === 'chapter') {
     const releasedMessageIds = new Set(entry.sourceIds)
     state.processedMessageIds = state.processedMessageIds.filter((id) => !releasedMessageIds.has(id))

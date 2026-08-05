@@ -481,6 +481,7 @@ function setup(ctx) {
       content.appendChild(error);
     }
     const allEntries = activeEntries(data.state);
+    const latestEntryId = allEntries[allEntries.length - 1]?.id;
     const pendingEdits = allEntries.flatMap((entry) => {
       const content2 = entryDrafts.get(entry.id);
       return content2 !== undefined && content2 !== entry.content ? [{ id: entry.id, content: content2 }] : [];
@@ -546,38 +547,41 @@ function setup(ctx) {
         openButton.appendChild(element("span", "summaryplus-entry-label", title));
         openButton.addEventListener("click", openEditor);
         const actions = element("div", "summaryplus-entry-actions");
-        const deleteButton = element("button", "summaryplus-entry-action is-delete");
-        deleteButton.type = "button";
-        deleteButton.disabled = controlsDisabled;
-        deleteButton.title = `Delete ${title}`;
-        deleteButton.setAttribute("aria-label", `Delete ${title}`);
-        const deleteIcon = element("span", "summaryplus-entry-icon");
-        deleteIcon.innerHTML = DELETE_ICON;
-        deleteButton.appendChild(deleteIcon);
-        deleteButton.addEventListener("click", async () => {
-          deletingEntryId = entry.id;
-          render();
-          let result;
-          try {
-            result = await ctx.ui.showConfirm({
-              title: `Delete ${LEVEL_LABEL[entry.level]}`,
-              message: deleteEntryMessage(entry),
-              variant: "danger",
-              confirmLabel: "Delete"
-            });
-          } catch {
-            deletingEntryId = null;
+        if (entry.id === latestEntryId) {
+          const deleteButton = element("button", "summaryplus-entry-action is-delete");
+          deleteButton.type = "button";
+          deleteButton.disabled = controlsDisabled;
+          deleteButton.title = `Delete ${title}`;
+          deleteButton.setAttribute("aria-label", `Delete ${title}`);
+          const deleteIcon = element("span", "summaryplus-entry-icon");
+          deleteIcon.innerHTML = DELETE_ICON;
+          deleteButton.appendChild(deleteIcon);
+          deleteButton.addEventListener("click", async () => {
+            deletingEntryId = entry.id;
             render();
-            return;
-          }
-          if (!result.confirmed) {
-            deletingEntryId = null;
-            render();
-            return;
-          }
-          entryDrafts.delete(entry.id);
-          send({ type: "delete_entry", entryId: entry.id });
-        });
+            let result;
+            try {
+              result = await ctx.ui.showConfirm({
+                title: `Delete ${LEVEL_LABEL[entry.level]}`,
+                message: deleteEntryMessage(entry),
+                variant: "danger",
+                confirmLabel: "Delete"
+              });
+            } catch {
+              deletingEntryId = null;
+              render();
+              return;
+            }
+            if (!result.confirmed) {
+              deletingEntryId = null;
+              render();
+              return;
+            }
+            entryDrafts.delete(entry.id);
+            send({ type: "delete_entry", entryId: entry.id });
+          });
+          actions.appendChild(deleteButton);
+        }
         const expandButton = element("button", "summaryplus-entry-action");
         expandButton.type = "button";
         expandButton.disabled = controlsDisabled;
@@ -587,7 +591,7 @@ function setup(ctx) {
         expandIcon.innerHTML = EXPAND_ICON;
         expandButton.appendChild(expandIcon);
         expandButton.addEventListener("click", openEditor);
-        actions.append(deleteButton, expandButton);
+        actions.appendChild(expandButton);
         card.append(openButton, actions);
         stack.appendChild(card);
       }
