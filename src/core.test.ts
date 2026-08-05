@@ -8,7 +8,9 @@ import {
   estimatedStreamTokens,
   hasValidContextPlaceholders,
   macroValue,
+  mergeVisibleOrder,
   normalizeSettings,
+  orderBySavedIds,
   orderedSourceItems,
   pendingMessages,
   renderGenerationUserPrompt,
@@ -51,12 +53,42 @@ describe('settings', () => {
       temperature: 0.2,
       topP: 1,
       maxTokens: 4096,
+      regexEnabledIds: [],
+      regexOrder: [],
     })
   })
 
   test('accepts an arbitrary non-negative retry count', () => {
     expect(normalizeSettings({ retries: 999_999 }).retries).toBe(999_999)
     expect(normalizeSettings({ retries: -10 }).retries).toBe(0)
+  })
+
+  test('normalizes regex selections and order as unique IDs', () => {
+    const settings = normalizeSettings({
+      regexEnabledIds: ['one', ' one ', '', 2, 'two', 'one'],
+      regexOrder: ['two', 'one', 'two', null],
+    })
+    expect(settings.regexEnabledIds).toEqual(['one', 'two'])
+    expect(settings.regexOrder).toEqual(['two', 'one'])
+  })
+})
+
+describe('regex ordering', () => {
+  test('uses the saved order and appends newly discovered scripts', () => {
+    const scripts = [
+      { id: 'one', name: 'One' },
+      { id: 'two', name: 'Two' },
+      { id: 'three', name: 'Three' },
+    ]
+    expect(orderBySavedIds(scripts, ['two', 'missing', 'one']).map((script) => script.id))
+      .toEqual(['two', 'one', 'three'])
+  })
+
+  test('reorders visible scripts without discarding hidden scope-specific IDs', () => {
+    expect(mergeVisibleOrder(
+      ['global', 'other-chat', 'current-chat'],
+      ['current-chat', 'global'],
+    )).toEqual(['current-chat', 'global', 'other-chat'])
   })
 })
 

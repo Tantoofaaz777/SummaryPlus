@@ -1,4 +1,5 @@
 import type { SpindleFrontendContext } from 'lumiverse-spindle-types'
+import Sortable from 'sortablejs'
 import {
   LEVELS,
   activeEntries,
@@ -51,6 +52,16 @@ const REGENERATE_ICON = `
 const DELETE_ICON = `
 <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
   <path d="M4.5 7h15M9.5 3.5h5L16 7H8l1.5-3.5ZM7 7l.75 13h8.5L17 7M10 10.5v6M14 10.5v6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>`
+
+const DRAG_ICON = `
+<svg viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <circle cx="8" cy="7" r="1.4"/>
+  <circle cx="16" cy="7" r="1.4"/>
+  <circle cx="8" cy="12" r="1.4"/>
+  <circle cx="16" cy="12" r="1.4"/>
+  <circle cx="8" cy="17" r="1.4"/>
+  <circle cx="16" cy="17" r="1.4"/>
 </svg>`
 
 const STYLES = `
@@ -272,6 +283,92 @@ const STYLES = `
 .summaryplus-label { font-size: 11px; font-weight: 650; }
 .summaryplus-switch { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .summaryplus-switch input { width: 17px; height: 17px; accent-color: var(--sp-accent); }
+.summaryplus-regex-list { display: flex; flex-direction: column; gap: 7px; }
+.summaryplus-regex-row {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center;
+  min-height: 42px; overflow: hidden; border: 1px solid var(--sp-secondary-border);
+  border-radius: var(--lumiverse-radius, 8px); background: var(--sp-secondary);
+  transition:
+    background var(--lumiverse-transition-fast, .15s ease),
+    border-color var(--lumiverse-transition-fast, .15s ease),
+    box-shadow var(--lumiverse-transition-fast, .15s ease);
+}
+.summaryplus-regex-row:hover { background: var(--sp-secondary-hover); }
+.summaryplus-regex-name {
+  min-width: 0; overflow: hidden; padding: 0 8px; color: var(--sp-text);
+  font-size: 12px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap;
+}
+.summaryplus-regex-drag {
+  appearance: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 36px; height: 36px; border: 0; outline: none; padding: 8px;
+  background: transparent; color: var(--lumiverse-text-dim, var(--sp-muted));
+  cursor: grab; touch-action: none; user-select: none;
+  transition: color var(--lumiverse-transition-fast, .15s ease);
+}
+.summaryplus-regex-drag:hover,
+.summaryplus-regex-drag:focus-visible,
+.summaryplus-regex-drag[aria-grabbed="true"] {
+  color: var(--lumiverse-primary-text, var(--lumiverse-primary, var(--sp-accent)));
+}
+.summaryplus-regex-drag:focus-visible {
+  border-radius: var(--lumiverse-radius, 8px);
+  box-shadow: inset 0 0 0 2px var(--lumiverse-primary, var(--sp-accent));
+}
+.summaryplus-regex-drag:active { cursor: grabbing; }
+.summaryplus-regex-drag svg { display: block; width: 18px; height: 18px; pointer-events: none; }
+.summaryplus-regex-toggle {
+  position: relative; display: inline-flex; align-items: center; justify-content: center;
+  align-self: stretch; padding: 8px 10px 8px 4px; cursor: pointer;
+}
+.summaryplus-regex-toggle input {
+  position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none;
+}
+.summaryplus-regex-switch {
+  position: relative; width: 32px; height: 18px; flex: 0 0 auto;
+  border: 1px solid var(--lumiverse-border-hover, var(--sp-secondary-border));
+  border-radius: var(--lumiverse-radius-md, 10px);
+  background: var(--lumiverse-fill, var(--sp-surface));
+  transition:
+    background var(--lumiverse-transition-fast, .15s ease),
+    border-color var(--lumiverse-transition-fast, .15s ease);
+}
+.summaryplus-regex-switch::after {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px;
+  border-radius: 50%; background: var(--lumiverse-text-muted, var(--sp-muted));
+  transition:
+    transform var(--lumiverse-transition-fast, .15s ease),
+    background var(--lumiverse-transition-fast, .15s ease);
+}
+.summaryplus-regex-toggle input:focus-visible + .summaryplus-regex-switch {
+  outline: 2px solid var(--lumiverse-primary, var(--sp-accent)); outline-offset: 2px;
+}
+.summaryplus-regex-toggle input:checked + .summaryplus-regex-switch {
+  border-color: var(--lumiverse-primary, var(--sp-accent));
+  background: var(--lumiverse-primary, var(--sp-accent));
+}
+.summaryplus-regex-toggle input:checked + .summaryplus-regex-switch::after {
+  transform: translateX(14px);
+  background: var(--lumiverse-primary-contrast, #fff);
+}
+.summaryplus-regex-ghost {
+  border-color: var(--lumiverse-primary, var(--sp-accent));
+  border-style: dashed; opacity: .42;
+}
+.summaryplus-regex-chosen {
+  border-color: var(--lumiverse-primary, var(--sp-accent));
+}
+.summaryplus-regex-active,
+.summaryplus-regex-fallback {
+  border-color: var(--lumiverse-primary, var(--sp-accent));
+  background: var(--lumiverse-elevated, var(--sp-secondary-hover));
+  box-shadow: var(--lumiverse-shadow-lg, 0 10px 28px rgba(0, 0, 0, .28));
+}
+.summaryplus-regex-is-dragging { cursor: grabbing; }
+.summaryplus-regex-is-dragging * { cursor: grabbing !important; }
+.summaryplus-sr-only {
+  position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%); margin: -1px; padding: 0; border: 0; white-space: nowrap;
+}
 .summaryplus-prompt-head { display: flex; align-items: center; gap: 7px; }
 .summaryplus-prompt-head .summaryplus-select { flex: 1; min-width: 0; }
 .summaryplus-prompt-head .summaryplus-button { flex: 0 0 auto; }
@@ -290,14 +387,20 @@ const STYLES = `
 }
 @media (prefers-reduced-motion: reduce) {
   .summaryplus-generation-indicator,
-  .summaryplus-generation-dots span {
+  .summaryplus-generation-dots span,
+  .summaryplus-regex-row,
+  .summaryplus-regex-drag,
+  .summaryplus-regex-switch,
+  .summaryplus-regex-switch::after {
     animation: none;
+    transition: none;
     opacity: 1;
     transform: none;
   }
 }
 @media (any-hover: none) {
   .summaryplus-entry-actions { opacity: 1; }
+  .summaryplus-regex-drag { width: 44px; height: 44px; padding: 11px; }
 }
 @media (max-width: 370px) {
   .summaryplus-grid { grid-template-columns: 1fr; }
@@ -431,10 +534,124 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   let regeneratingEntryId: string | null = null
   let deletingEntryId: string | null = null
   let draftChatId: string | null = null
+  let regexSortable: Sortable | null = null
   const entryDrafts = new Map<string, string>()
   const promptDrafts = new Map<string, Pick<PromptDefinition, 'name' | 'systemPrompt' | 'userPrompt'>>()
 
   const send = (payload: unknown) => ctx.sendToBackend(payload)
+
+  const destroyRegexSortable = () => {
+    regexSortable?.destroy()
+    regexSortable = null
+    document.body.classList.remove('summaryplus-regex-is-dragging')
+  }
+
+  const regexRows = (container: HTMLElement): HTMLElement[] => (
+    Array.from(container.children)
+      .filter((child): child is HTMLElement => child instanceof HTMLElement)
+      .filter((child) => child.classList.contains('summaryplus-regex-row'))
+  )
+
+  const regexOrderFromDom = (container: HTMLElement): string[] => (
+    regexRows(container)
+      .map((row) => row.dataset.regexId)
+      .filter((id): id is string => Boolean(id))
+  )
+
+  const announceRegexOrder = (message: string) => {
+    const liveRegion = root.querySelector<HTMLElement>('[data-summaryplus-regex-status]')
+    if (!liveRegion) return
+    liveRegion.textContent = ''
+    requestAnimationFrame(() => {
+      liveRegion.textContent = message
+    })
+  }
+
+  const saveRegexOrder = (container: HTMLElement) => {
+    send({
+      type: 'save_settings',
+      settings: { regexOrder: regexOrderFromDom(container) },
+    })
+  }
+
+  const clearRegexDragState = (item?: HTMLElement) => {
+    document.body.classList.remove('summaryplus-regex-is-dragging')
+    item
+      ?.querySelector<HTMLElement>('.summaryplus-regex-drag')
+      ?.setAttribute('aria-grabbed', 'false')
+  }
+
+  const mountRegexSortable = () => {
+    const container = root.querySelector<HTMLElement>('[data-summaryplus-regex-list]')
+    if (!container) return
+    const rows = regexRows(container)
+
+    for (const row of rows) {
+      const handle = row.querySelector<HTMLButtonElement>('.summaryplus-regex-drag')
+      if (!handle) continue
+      handle.addEventListener('keydown', (event) => {
+        if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
+        event.preventDefault()
+        const currentRows = regexRows(container)
+        const currentIndex = currentRows.indexOf(row)
+        const nextIndex = event.key === 'ArrowUp' ? currentIndex - 1 : currentIndex + 1
+        const name = row.dataset.regexName || 'Regex'
+        if (nextIndex < 0 || nextIndex >= currentRows.length) {
+          announceRegexOrder(`${name} is already at the ${event.key === 'ArrowUp' ? 'top' : 'bottom'}.`)
+          return
+        }
+        if (event.key === 'ArrowUp') {
+          container.insertBefore(row, currentRows[nextIndex])
+        } else {
+          container.insertBefore(row, currentRows[nextIndex].nextSibling)
+        }
+        handle.focus()
+        saveRegexOrder(container)
+        announceRegexOrder(`${name} moved to position ${nextIndex + 1} of ${currentRows.length}.`)
+      })
+    }
+
+    if (rows.length < 2) return
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    regexSortable = Sortable.create(container, {
+      draggable: '> .summaryplus-regex-row',
+      handle: '.summaryplus-regex-drag',
+      direction: 'vertical',
+      animation: reducedMotion ? 0 : 170,
+      easing: 'cubic-bezier(0.2, 0, 0, 1)',
+      delay: 200,
+      delayOnTouchOnly: true,
+      touchStartThreshold: 5,
+      fallbackTolerance: 4,
+      forceFallback: true,
+      fallbackOnBody: true,
+      scroll: true,
+      bubbleScroll: false,
+      scrollSensitivity: 24,
+      scrollSpeed: 8,
+      ghostClass: 'summaryplus-regex-ghost',
+      chosenClass: 'summaryplus-regex-chosen',
+      dragClass: 'summaryplus-regex-active',
+      fallbackClass: 'summaryplus-regex-fallback',
+      onStart: (event) => {
+        document.body.classList.add('summaryplus-regex-is-dragging')
+        event.item
+          .querySelector<HTMLElement>('.summaryplus-regex-drag')
+          ?.setAttribute('aria-grabbed', 'true')
+      },
+      onEnd: (event) => {
+        clearRegexDragState(event.item)
+        if (event.oldIndex === event.newIndex) return
+        saveRegexOrder(container)
+        const movedRow = event.item
+        const movedRows = regexRows(container)
+        const movedIndex = movedRows.indexOf(movedRow)
+        const name = movedRow.dataset.regexName || 'Regex'
+        announceRegexOrder(`${name} moved to position ${movedIndex + 1} of ${movedRows.length}.`)
+      },
+      onUnchoose: (event) => clearRegexDragState(event.item),
+    })
+  }
 
   const updateGenerationProgressDom = (progress: GenerationProgress): boolean => {
     const card = root.querySelector<HTMLElement>('[data-summaryplus-generation]')
@@ -1133,6 +1350,55 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     )
     modelSection.appendChild(modelGrid)
 
+    const regexSection = element('section', 'summaryplus-section')
+    regexSection.appendChild(element('h3', 'summaryplus-section-title', 'Regex preprocessing'))
+    if (data.regexScripts.length === 0) {
+      regexSection.appendChild(element('div', 'summaryplus-help', 'No prompt regex found.'))
+    } else {
+      const enabledRegexIds = new Set(settings.regexEnabledIds)
+      const regexList = element('div', 'summaryplus-regex-list')
+      regexList.dataset.summaryplusRegexList = ''
+      for (const script of data.regexScripts) {
+        const row = element('div', 'summaryplus-regex-row')
+        row.dataset.regexId = script.id
+        row.dataset.regexName = script.name
+
+        const dragHandle = element('button', 'summaryplus-regex-drag')
+        dragHandle.type = 'button'
+        dragHandle.innerHTML = DRAG_ICON
+        dragHandle.setAttribute('aria-label', `Reorder ${script.name}. Use the arrow keys or drag.`)
+        dragHandle.setAttribute('aria-grabbed', 'false')
+
+        const name = element('span', 'summaryplus-regex-name', script.name)
+        name.title = script.name
+
+        const toggle = element('label', 'summaryplus-regex-toggle')
+        const checkbox = element('input')
+        checkbox.type = 'checkbox'
+        checkbox.checked = enabledRegexIds.has(script.id)
+        checkbox.setAttribute('aria-label', `Use ${script.name}`)
+        const switchControl = element('span', 'summaryplus-regex-switch')
+        switchControl.setAttribute('aria-hidden', 'true')
+        checkbox.addEventListener('change', () => {
+          const nextEnabledIds = checkbox.checked
+            ? [...settings.regexEnabledIds.filter((id) => id !== script.id), script.id]
+            : settings.regexEnabledIds.filter((id) => id !== script.id)
+          send({
+            type: 'save_settings',
+            settings: { regexEnabledIds: nextEnabledIds },
+          })
+        })
+        toggle.append(checkbox, switchControl)
+        row.append(dragHandle, name, toggle)
+        regexList.appendChild(row)
+      }
+      const liveRegion = element('div', 'summaryplus-sr-only')
+      liveRegion.dataset.summaryplusRegexStatus = ''
+      liveRegion.setAttribute('role', 'status')
+      liveRegion.setAttribute('aria-live', 'polite')
+      regexSection.append(regexList, liveRegion)
+    }
+
     const readNumber = (input: HTMLInputElement, fallback: number) => (
       Number.isFinite(input.valueAsNumber) ? input.valueAsNumber : fallback
     )
@@ -1177,11 +1443,13 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       automationSection,
       modelSection,
       batchingSection,
+      regexSection,
     )
     return content
   }
 
   function render(): void {
+    destroyRegexSortable()
     const shell = element('div', 'summaryplus-shell')
     shell.appendChild(renderNav())
     if (!snapshot) {
@@ -1197,6 +1465,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       shell.appendChild(content)
     }
     root.replaceChildren(shell)
+    if (snapshot && screen === 'settings') mountRegexSortable()
   }
 
   const unsubscribeBackend = ctx.onBackendMessage((payload) => {
@@ -1250,6 +1519,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   send({ type: 'request_snapshot' })
 
   return () => {
+    destroyRegexSortable()
     unsubscribeChatSwitch()
     unsubscribeActivate()
     unsubscribeBackend()

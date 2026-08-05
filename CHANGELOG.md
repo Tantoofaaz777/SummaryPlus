@@ -9,3 +9,4 @@
 - Added global connection, sampling, token, retry, and automation settings.
 - Added chat-persisted state, user-persisted settings, cancellation, retries, and failure recovery.
 - Added `summaryPlusChapter`, `summaryPlusArc`, and `summaryPlusVolume` macros.
+- Added independently enabled and reorderable Lumiverse prompt-regex preprocessing for Chapter sources.

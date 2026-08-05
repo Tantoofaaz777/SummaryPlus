@@ -1,6 +1,8 @@
 import type {
+  ChatDTO,
   ConnectionProfileDTO,
   GenerationRequestDTO,
+  RegexScriptDTO,
   SpindleAPI,
 } from 'lumiverse-spindle-types'
 import {
@@ -19,7 +21,9 @@ import {
   hasValidContextPlaceholders,
   latestActiveEntry,
   macroValue,
+  mergeVisibleOrder,
   normalizeSettings,
+  orderBySavedIds,
   orderedSourceItems,
   parseChatState,
   pendingMessages,
@@ -35,11 +39,16 @@ import {
   type ConnectionOption,
   type GenerationProgress,
   type PromptDefinition,
+  type RegexOption,
   type Snapshot,
   type SummaryEntry,
   type SummaryLevel,
   type SummaryPlusSettings,
 } from './core'
+import {
+  applyRegexPipeline,
+  type SummaryRegexScript,
+} from './regex-pipeline'
 
 declare const spindle: SpindleAPI
 
@@ -142,6 +151,7 @@ async function getMessages(chatId: string): Promise<ChatMessageLike[]> {
   return messages.map((message) => ({
     id: String(message.id),
     content: typeof message.content === 'string' ? message.content : '',
+    role: message.role,
   }))
 }
 
@@ -176,6 +186,56 @@ function toConnectionOption(connection: ConnectionProfileDTO): ConnectionOption 
   }
 }
 
+function regexScopeRank(scope: RegexScriptDTO['scope']): number {
+  if (scope === 'global') return 0
+  if (scope === 'character') return 1
+  return 2
+}
+
+function regexAppliesToChat(script: RegexScriptDTO, chat: ChatDTO | null): boolean {
+  if (script.scope === 'global') return true
+  if (!chat) return false
+  if (script.scope === 'character') return script.scope_id === chat.character_id
+  return script.scope_id === chat.id
+}
+
+async function listPromptRegexScripts(
+  chat: ChatDTO | null,
+  userId?: string,
+): Promise<SummaryRegexScript[]> {
+  const scripts: SummaryRegexScript[] = []
+  const limit = 200
+  let offset = 0
+  let total = 0
+  do {
+    const page = await spindle.regex_scripts.list({
+      target: 'prompt',
+      limit,
+      offset,
+      userId,
+    })
+    scripts.push(...page.data as SummaryRegexScript[])
+    total = page.total
+    offset += page.data.length
+    if (page.data.length === 0) break
+  } while (offset < total)
+
+  return scripts
+    .filter((script) => regexAppliesToChat(script, chat))
+    .sort((left, right) => (
+      regexScopeRank(left.scope) - regexScopeRank(right.scope)
+      || left.sort_order - right.sort_order
+      || left.created_at - right.created_at
+    ))
+}
+
+function toRegexOption(script: RegexScriptDTO): RegexOption {
+  return {
+    id: script.id,
+    name: script.name,
+  }
+}
+
 async function createSnapshot(userId?: string): Promise<Snapshot> {
   const settings = await getSettings(userId)
   let connections: ConnectionOption[] = []
@@ -185,7 +245,18 @@ async function createSnapshot(userId?: string): Promise<Snapshot> {
     // A revoked generation permission should not make the rest of the drawer unusable.
   }
 
-  const chatId = await activeChatId(userId)
+  const chat = await spindle.chats.getActive(userId)
+  const chatId = chat && typeof chat.id === 'string' ? chat.id : null
+  let regexScripts: RegexOption[] = []
+  try {
+    regexScripts = orderBySavedIds(
+      (await listPromptRegexScripts(chat, userId)).map(toRegexOption),
+      settings.regexOrder,
+    )
+  } catch {
+    // A missing regex_scripts permission should not make the drawer unusable.
+  }
+
   if (!chatId) {
     return {
       chatId: null,
@@ -193,6 +264,7 @@ async function createSnapshot(userId?: string): Promise<Snapshot> {
       settings,
       prompts: allPrompts(settings),
       connections,
+      regexScripts,
       processing: false,
       generationProgress: null,
       pendingMessageCount: 0,
@@ -210,6 +282,7 @@ async function createSnapshot(userId?: string): Promise<Snapshot> {
     settings,
     prompts: allPrompts(settings),
     connections,
+    regexScripts,
     processing: processingChats.has(chatId),
     generationProgress: generationProgressByChat.get(chatId) ?? null,
     pendingMessageCount: pendingMessages(messages, state.processedMessageIds).length,
@@ -375,6 +448,39 @@ async function generateSummary(
   throw lastFailure
 }
 
+async function chapterSourceText(
+  chatId: string,
+  messages: ChatMessageLike[],
+  settings: SummaryPlusSettings,
+  signal: AbortSignal,
+  userId?: string,
+): Promise<string> {
+  if (settings.regexEnabledIds.length === 0) return sourceText(messages)
+  const chat = await spindle.chats.get(chatId, userId)
+  const enabledIds = new Set(settings.regexEnabledIds)
+  const scripts = orderBySavedIds(
+    await listPromptRegexScripts(chat, userId),
+    settings.regexOrder,
+  ).filter((script) => enabledIds.has(script.id))
+  if (scripts.length === 0) return sourceText(messages)
+
+  const processed = await applyRegexPipeline(
+    messages,
+    scripts,
+    async (template) => {
+      const result = await spindle.macros.resolve(template, {
+        chatId,
+        characterId: chat?.character_id || undefined,
+        userId,
+        commit: false,
+      })
+      return result.text
+    },
+    signal,
+  )
+  return sourceText(processed)
+}
+
 async function recordFailure(
   chatId: string,
   level: SummaryLevel,
@@ -414,7 +520,7 @@ async function createChapter(
         orderStart: state.nextChapterOrder,
         orderEnd: state.nextChapterOrder,
       },
-      sourceText(batch),
+      await chapterSourceText(chatId, batch, settings, signal, userId),
       contextEntriesBefore(state, state.nextChapterOrder),
       settings,
       signal,
@@ -797,6 +903,9 @@ async function regenerateEntry(
 
   let content: string
   try {
+    const input = chapterSources
+      ? await chapterSourceText(chatId, chapterSources, settings, signal, userId)
+      : sourceText(summarySources ?? [])
     content = await generateSummary(
       chatId,
       {
@@ -805,7 +914,7 @@ async function regenerateEntry(
         orderStart: entry.orderStart,
         orderEnd: entry.orderEnd,
       },
-      sourceText(chapterSources ?? summarySources ?? []),
+      input,
       contextEntriesBefore(state, entry.orderStart),
       settings,
       signal,
@@ -913,9 +1022,13 @@ function mergeSettings(
   current: SummaryPlusSettings,
   incoming: Partial<SummaryPlusSettings>,
 ): SummaryPlusSettings {
+  const regexOrder = Array.isArray(incoming.regexOrder)
+    ? mergeVisibleOrder(current.regexOrder, incoming.regexOrder)
+    : current.regexOrder
   return normalizeSettings({
     ...current,
     ...incoming,
+    regexOrder,
     customPrompts: current.customPrompts,
     activePromptIds: current.activePromptIds,
   })
@@ -1203,10 +1316,19 @@ for (const event of ['MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'SWI
   })
 }
 
-spindle.on('PERMISSION_CHANGED', (payload) => {
-  if (!payload.granted && payload.permission === 'generation') {
+for (const event of ['REGEX_SCRIPT_CHANGED', 'REGEX_SCRIPT_DELETED']) {
+  spindle.on(event, (_payload: unknown, userId?: string) => {
+    void publishSnapshot(userId)
+  })
+}
+
+spindle.on('PERMISSION_CHANGED', (payload: unknown, userId?: string) => {
+  if (!payload || typeof payload !== 'object') return
+  const event = payload as { granted?: unknown; permission?: unknown }
+  if (!event.granted && event.permission === 'generation') {
     for (const controller of controllers.values()) controller.abort()
   }
+  if (event.permission === 'regex_scripts') void publishSnapshot(userId)
 })
 
 spindle.log.info('SummaryPlus 0.0.1 loaded.')

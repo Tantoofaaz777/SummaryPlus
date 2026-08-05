@@ -69,6 +69,8 @@ function createDefaultSettings() {
     temperature: 0.2,
     topP: 1,
     maxTokens: 4096,
+    regexEnabledIds: [],
+    regexOrder: [],
     customPrompts: [],
     activePromptIds: {
       chapter: BUILTIN_PROMPTS.chapter.id,
@@ -92,6 +94,11 @@ function finiteNumber(value, fallback) {
 }
 function integerAtLeast(value, fallback, minimum) {
   return Math.max(minimum, Math.trunc(finiteNumber(value, fallback)));
+}
+function uniqueStringIds(value) {
+  if (!Array.isArray(value))
+    return [];
+  return [...new Set(value.filter((item) => typeof item === "string").map((item) => item.trim()).filter(Boolean))];
 }
 function isLevel(value) {
   return typeof value === "string" && LEVELS.includes(value);
@@ -136,6 +143,8 @@ function normalizeSettings(value) {
     temperature: Math.max(0, finiteNumber(candidate.temperature, defaults.temperature)),
     topP: Math.min(1, Math.max(0, finiteNumber(candidate.topP, defaults.topP))),
     maxTokens: integerAtLeast(candidate.maxTokens, defaults.maxTokens, 1),
+    regexEnabledIds: uniqueStringIds(candidate.regexEnabledIds),
+    regexOrder: uniqueStringIds(candidate.regexOrder),
     customPrompts,
     activePromptIds: {
       chapter: requested && availableIds.has(requested.chapter) ? requested.chapter : defaults.activePromptIds.chapter,
@@ -263,6 +272,30 @@ function sourceText(items) {
 
 `);
 }
+function orderBySavedIds(items, savedOrder) {
+  const byId = new Map(items.map((item) => [item.id, item]));
+  const ordered = [];
+  for (const itemId of savedOrder) {
+    const item = byId.get(itemId);
+    if (!item)
+      continue;
+    ordered.push(item);
+    byId.delete(itemId);
+  }
+  for (const item of items) {
+    if (byId.delete(item.id))
+      ordered.push(item);
+  }
+  return ordered;
+}
+function mergeVisibleOrder(currentOrder, visibleOrder) {
+  const visible = uniqueStringIds(visibleOrder);
+  const visibleIds = new Set(visible);
+  return [
+    ...visible,
+    ...uniqueStringIds(currentOrder).filter((itemId) => !visibleIds.has(itemId))
+  ];
+}
 function estimatedStreamTokens(characterCount) {
   return Math.ceil(Math.max(0, characterCount) / 4);
 }
@@ -353,6 +386,160 @@ function isSameEntryBatch(selected, currentState) {
   });
 }
 
+// src/regex-pipeline.ts
+function abortError() {
+  const error = new Error("Processing cancelled.");
+  error.name = "AbortError";
+  return error;
+}
+function throwIfAborted(signal) {
+  if (signal?.aborted)
+    throw abortError();
+}
+function placementFor(message) {
+  if (message.role === "user")
+    return "user_input";
+  if (message.role === "assistant")
+    return "ai_output";
+  if (message.role === "system")
+    return "world_info";
+  return null;
+}
+function replacementCapture(token, captures) {
+  const index = Number(token);
+  if (!Number.isInteger(index) || index <= 0)
+    return null;
+  if (index <= captures.length)
+    return captures[index - 1] ?? "";
+  if (token.length === 2) {
+    const firstIndex = Number(token[0]);
+    if (firstIndex > 0 && firstIndex <= captures.length) {
+      return `${captures[firstIndex - 1] ?? ""}${token[1]}`;
+    }
+  }
+  return null;
+}
+function substituteCaptures(template, fullMatch, captures, offset, input, namedGroups) {
+  return template.replace(/\$(\$|&|`|'|<([^>]+)>|(\d{1,2}))/g, (token, special, groupName, captureIndex) => {
+    if (special === "$")
+      return "$";
+    if (special === "&")
+      return fullMatch;
+    if (special === "`")
+      return input.slice(0, offset);
+    if (special === "'")
+      return input.slice(offset + fullMatch.length);
+    if (groupName !== undefined) {
+      return namedGroups ? namedGroups[groupName] ?? "" : token;
+    }
+    if (captureIndex !== undefined) {
+      return replacementCapture(captureIndex, captures) ?? token;
+    }
+    return token;
+  });
+}
+function captureReplacements(input, regex, replacement) {
+  const matches = [];
+  input.replace(regex, (...args) => {
+    const fullMatch = String(args[0] ?? "");
+    const maybeNamedGroups = args.at(-1);
+    const hasNamedGroups = Boolean(maybeNamedGroups && typeof maybeNamedGroups === "object" && !Array.isArray(maybeNamedGroups));
+    const inputIndex = hasNamedGroups ? args.length - 2 : args.length - 1;
+    const offsetIndex = hasNamedGroups ? args.length - 3 : args.length - 2;
+    const offset = Number(args[offsetIndex]);
+    const wholeInput = String(args[inputIndex] ?? input);
+    const captures = args.slice(1, offsetIndex).map((capture) => capture === undefined ? undefined : String(capture));
+    matches.push({
+      index: offset,
+      matchLength: fullMatch.length,
+      template: substituteCaptures(replacement, fullMatch, captures, offset, wholeInput, hasNamedGroups ? maybeNamedGroups : undefined)
+    });
+    return fullMatch;
+  });
+  return matches;
+}
+function rebuildFromMatches(input, matches, replacements) {
+  let output = "";
+  let lastIndex = 0;
+  for (let index = 0;index < matches.length; index += 1) {
+    const match = matches[index];
+    output += input.slice(lastIndex, match.index);
+    output += replacements[index] ?? "";
+    lastIndex = match.index + match.matchLength;
+  }
+  return output + input.slice(lastIndex);
+}
+async function resolvedPattern(script, resolveMacros) {
+  return script.substitute_macros === "none" ? script.find_regex : resolveMacros(script.find_regex);
+}
+async function replaceWithScript(input, script, resolveMacros) {
+  const findPattern = await resolvedPattern(script, resolveMacros);
+  const regex = new RegExp(findPattern, script.flags);
+  const mode = script.substitute_macros;
+  if (mode === "raw") {
+    const matches = captureReplacements(input, regex, script.replace_string);
+    const replacements = [];
+    for (const match of matches) {
+      replacements.push(await resolveMacros(match.template));
+    }
+    return rebuildFromMatches(input, matches, replacements);
+  }
+  if (mode === "after") {
+    return resolveMacros(input.replace(regex, script.replace_string));
+  }
+  if (mode === "escaped") {
+    const replacement = await resolveMacros(script.replace_string);
+    return input.replace(regex, () => replacement);
+  }
+  return input.replace(regex, script.replace_string);
+}
+function trimConfiguredStrings(input, trimStrings) {
+  let output = input;
+  for (const trim of trimStrings) {
+    if (trim)
+      output = output.replaceAll(trim, "");
+  }
+  return output;
+}
+function errorText(error) {
+  if (error instanceof Error && error.message.trim())
+    return error.message;
+  if (typeof error === "string" && error.trim())
+    return error;
+  return "Unknown regex error.";
+}
+async function applyRegexPipeline(messages, scripts, resolveMacros, signal) {
+  const output = [];
+  for (let messageIndex = 0;messageIndex < messages.length; messageIndex += 1) {
+    throwIfAborted(signal);
+    const message = messages[messageIndex];
+    const placement = placementFor(message);
+    const depth = messages.length - 1 - messageIndex;
+    let content = message.content;
+    if (placement) {
+      for (const script of scripts) {
+        throwIfAborted(signal);
+        if (!script.placement.includes(placement))
+          continue;
+        if (script.min_depth !== null && depth < script.min_depth)
+          continue;
+        if (script.max_depth !== null && depth > script.max_depth)
+          continue;
+        try {
+          content = await replaceWithScript(content, script, resolveMacros);
+          content = trimConfiguredStrings(content, script.trim_strings);
+        } catch (error) {
+          if (error instanceof Error && error.name === "AbortError")
+            throw error;
+          throw new Error(`Regex "${script.name}" failed: ${errorText(error)}`);
+        }
+      }
+    }
+    output.push({ ...message, content });
+  }
+  return output;
+}
+
 // src/backend.ts
 class ProcessingCancelledError extends Error {
   constructor() {
@@ -418,7 +605,8 @@ async function getMessages(chatId) {
   const messages = await spindle.chat.getMessages(chatId);
   return messages.map((message) => ({
     id: String(message.id),
-    content: typeof message.content === "string" ? message.content : ""
+    content: typeof message.content === "string" ? message.content : "",
+    role: message.role
   }));
 }
 async function ensureState(chatId, discovery = "view") {
@@ -444,13 +632,60 @@ function toConnectionOption(connection) {
     isDefault: connection.is_default
   };
 }
+function regexScopeRank(scope) {
+  if (scope === "global")
+    return 0;
+  if (scope === "character")
+    return 1;
+  return 2;
+}
+function regexAppliesToChat(script, chat) {
+  if (script.scope === "global")
+    return true;
+  if (!chat)
+    return false;
+  if (script.scope === "character")
+    return script.scope_id === chat.character_id;
+  return script.scope_id === chat.id;
+}
+async function listPromptRegexScripts(chat, userId) {
+  const scripts = [];
+  const limit = 200;
+  let offset = 0;
+  let total = 0;
+  do {
+    const page = await spindle.regex_scripts.list({
+      target: "prompt",
+      limit,
+      offset,
+      userId
+    });
+    scripts.push(...page.data);
+    total = page.total;
+    offset += page.data.length;
+    if (page.data.length === 0)
+      break;
+  } while (offset < total);
+  return scripts.filter((script) => regexAppliesToChat(script, chat)).sort((left, right) => regexScopeRank(left.scope) - regexScopeRank(right.scope) || left.sort_order - right.sort_order || left.created_at - right.created_at);
+}
+function toRegexOption(script) {
+  return {
+    id: script.id,
+    name: script.name
+  };
+}
 async function createSnapshot(userId) {
   const settings = await getSettings(userId);
   let connections = [];
   try {
     connections = (await spindle.connections.list(userId)).map(toConnectionOption);
   } catch {}
-  const chatId = await activeChatId(userId);
+  const chat = await spindle.chats.getActive(userId);
+  const chatId = chat && typeof chat.id === "string" ? chat.id : null;
+  let regexScripts = [];
+  try {
+    regexScripts = orderBySavedIds((await listPromptRegexScripts(chat, userId)).map(toRegexOption), settings.regexOrder);
+  } catch {}
   if (!chatId) {
     return {
       chatId: null,
@@ -458,6 +693,7 @@ async function createSnapshot(userId) {
       settings,
       prompts: allPrompts(settings),
       connections,
+      regexScripts,
       processing: false,
       generationProgress: null,
       pendingMessageCount: 0,
@@ -474,6 +710,7 @@ async function createSnapshot(userId) {
     settings,
     prompts: allPrompts(settings),
     connections,
+    regexScripts,
     processing: processingChats.has(chatId),
     generationProgress: generationProgressByChat.get(chatId) ?? null,
     pendingMessageCount: pendingMessages(messages, state.processedMessageIds).length,
@@ -610,6 +847,25 @@ async function generateSummary(chatId, target, input, contextEntries, settings, 
   }
   throw lastFailure;
 }
+async function chapterSourceText(chatId, messages, settings, signal, userId) {
+  if (settings.regexEnabledIds.length === 0)
+    return sourceText(messages);
+  const chat = await spindle.chats.get(chatId, userId);
+  const enabledIds = new Set(settings.regexEnabledIds);
+  const scripts = orderBySavedIds(await listPromptRegexScripts(chat, userId), settings.regexOrder).filter((script) => enabledIds.has(script.id));
+  if (scripts.length === 0)
+    return sourceText(messages);
+  const processed = await applyRegexPipeline(messages, scripts, async (template) => {
+    const result = await spindle.macros.resolve(template, {
+      chatId,
+      characterId: chat?.character_id || undefined,
+      userId,
+      commit: false
+    });
+    return result.text;
+  }, signal);
+  return sourceText(processed);
+}
 async function recordFailure(chatId, level, error, userId) {
   const state = await ensureState(chatId);
   const message = errorMessage(error);
@@ -634,7 +890,7 @@ async function createChapter(chatId, state, settings, signal, userId) {
       level: "chapter",
       orderStart: state.nextChapterOrder,
       orderEnd: state.nextChapterOrder
-    }, sourceText(batch), contextEntriesBefore(state, state.nextChapterOrder), settings, signal, userId);
+    }, await chapterSourceText(chatId, batch, settings, signal, userId), contextEntriesBefore(state, state.nextChapterOrder), settings, signal, userId);
   } catch (error) {
     if (isAbort(error))
       throw error;
@@ -900,12 +1156,13 @@ async function regenerateEntry(chatId, entryId, signal, userId) {
   }
   let content;
   try {
+    const input = chapterSources ? await chapterSourceText(chatId, chapterSources, settings, signal, userId) : sourceText(summarySources ?? []);
     content = await generateSummary(chatId, {
       action: "regenerate",
       level: entry.level,
       orderStart: entry.orderStart,
       orderEnd: entry.orderEnd
-    }, sourceText(chapterSources ?? summarySources ?? []), contextEntriesBefore(state, entry.orderStart), settings, signal, userId);
+    }, input, contextEntriesBefore(state, entry.orderStart), settings, signal, userId);
   } catch (error) {
     if (isAbort(error))
       throw error;
@@ -975,9 +1232,11 @@ async function runRegeneration(chatId, entryId, userId) {
   }
 }
 function mergeSettings(current, incoming) {
+  const regexOrder = Array.isArray(incoming.regexOrder) ? mergeVisibleOrder(current.regexOrder, incoming.regexOrder) : current.regexOrder;
   return normalizeSettings({
     ...current,
     ...incoming,
+    regexOrder,
     customPrompts: current.customPrompts,
     activePromptIds: current.activePromptIds
   });
@@ -1238,10 +1497,20 @@ for (const event of ["MESSAGE_EDITED", "MESSAGE_DELETED", "MESSAGE_SWIPED", "SWI
     publishSnapshot(userId);
   });
 }
-spindle.on("PERMISSION_CHANGED", (payload) => {
-  if (!payload.granted && payload.permission === "generation") {
+for (const event of ["REGEX_SCRIPT_CHANGED", "REGEX_SCRIPT_DELETED"]) {
+  spindle.on(event, (_payload, userId) => {
+    publishSnapshot(userId);
+  });
+}
+spindle.on("PERMISSION_CHANGED", (payload, userId) => {
+  if (!payload || typeof payload !== "object")
+    return;
+  const event = payload;
+  if (!event.granted && event.permission === "generation") {
     for (const controller of controllers.values())
       controller.abort();
   }
+  if (event.permission === "regex_scripts")
+    publishSnapshot(userId);
 });
 spindle.log.info("SummaryPlus 0.0.1 loaded.");

@@ -16,6 +16,7 @@ The extension keeps the active entries at every level in chronological order and
   - `generation` for quiet summary calls and connection discovery
   - `chat_mutation` to read persisted chat history
   - `chats` to identify the currently active chat
+  - `regex_scripts` to list prompt-targeted Lumiverse regex
 
 ## Installation
 
@@ -59,11 +60,19 @@ A typical roleplay prompt can decide the hierarchy and delimiters itself:
 
 Only records returned by Lumiverse's persisted chat-history API are counted. Prompt assembly, presets, world books, SummaryPlus's own generation prompts, and quiet-generation calls are not part of the count.
 
-Every persisted record counts as one message. Summary input contains only the active message contents, in history order, separated by blank lines. Names, roles, IDs, timestamps, metadata, reasoning, and inactive swipes are omitted.
+Every persisted record counts as one message. Summary input contains only the active message contents, in history order, separated by blank lines. Names, IDs, timestamps, metadata, reasoning, and inactive swipes are omitted. Message roles are used only to select applicable regex placements and are not sent to the summarizing model.
 
 Delays are item-count lookaheads, not timers. With 6 messages per Chapter and a delay of 3, reaching 9 pending messages summarizes messages 1–6; messages 7–9 are not sent to the summarizing model and stay pending for a later batch. Batches are consecutive and never overlap.
 
 Deleting or editing a message before its Chapter is committed causes SummaryPlus to re-read and revalidate the current history. Already-created summaries are never silently rewritten after a configuration or chat-history change.
+
+## Regex preprocessing
+
+The Settings screen lists the Lumiverse regex available to the active chat whose target includes `prompt`. Each rule has an independent SummaryPlus switch and can be reordered by dragging its handle or by focusing the handle and pressing the up/down arrow keys.
+
+SummaryPlus applies enabled rules from top to bottom to each message immediately before creating or regenerating a Chapter. Lumiverse placement and depth filters are respected. A rule selected in SummaryPlus runs even when that rule is disabled for normal Lumiverse prompt processing; the SummaryPlus switches do not change the rule's Lumiverse setting.
+
+Regex preprocessing never edits persisted chat messages. Arc and Volume generation consumes the resulting summary entries and does not rerun message regex. Display actions do not run during prompt preprocessing. If a selected expression is invalid, Chapter generation fails before contacting the model and leaves its source messages eligible for another attempt.
 
 ## Existing chats
 

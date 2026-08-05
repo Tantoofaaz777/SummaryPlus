@@ -64,6 +64,8 @@ export interface SummaryPlusSettings {
   temperature: number
   topP: number
   maxTokens: number
+  regexEnabledIds: string[]
+  regexOrder: string[]
   customPrompts: PromptDefinition[]
   activePromptIds: Record<SummaryLevel, string>
 }
@@ -71,6 +73,7 @@ export interface SummaryPlusSettings {
 export interface ChatMessageLike {
   id: string | number
   content: string
+  role?: 'system' | 'user' | 'assistant'
 }
 
 export interface ConnectionOption {
@@ -92,12 +95,18 @@ export interface GenerationProgress {
   maxAttempts: number
 }
 
+export interface RegexOption {
+  id: string
+  name: string
+}
+
 export interface Snapshot {
   chatId: string | null
   state: ChatState | null
   settings: SummaryPlusSettings
   prompts: PromptDefinition[]
   connections: ConnectionOption[]
+  regexScripts: RegexOption[]
   processing: boolean
   generationProgress: GenerationProgress | null
   pendingMessageCount: number
@@ -168,6 +177,8 @@ export function createDefaultSettings(): SummaryPlusSettings {
     temperature: 0.2,
     topP: 1,
     maxTokens: 4096,
+    regexEnabledIds: [],
+    regexOrder: [],
     customPrompts: [],
     activePromptIds: {
       chapter: BUILTIN_PROMPTS.chapter.id,
@@ -194,6 +205,16 @@ function finiteNumber(value: unknown, fallback: number): number {
 
 function integerAtLeast(value: unknown, fallback: number, minimum: number): number {
   return Math.max(minimum, Math.trunc(finiteNumber(value, fallback)))
+}
+
+function uniqueStringIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return [...new Set(
+    value
+      .filter((item): item is string => typeof item === 'string')
+      .map((item) => item.trim())
+      .filter(Boolean),
+  )]
 }
 
 function isLevel(value: unknown): value is SummaryLevel {
@@ -255,6 +276,8 @@ export function normalizeSettings(value: unknown): SummaryPlusSettings {
     temperature: Math.max(0, finiteNumber(candidate.temperature, defaults.temperature)),
     topP: Math.min(1, Math.max(0, finiteNumber(candidate.topP, defaults.topP))),
     maxTokens: integerAtLeast(candidate.maxTokens, defaults.maxTokens, 1),
+    regexEnabledIds: uniqueStringIds(candidate.regexEnabledIds),
+    regexOrder: uniqueStringIds(candidate.regexOrder),
     customPrompts,
     activePromptIds: {
       chapter: requested && availableIds.has(requested.chapter)
@@ -452,6 +475,33 @@ export function selectPromotionBatch(
 
 export function sourceText(items: Array<{ content: string }>): string {
   return items.map((item) => item.content).join('\n\n')
+}
+
+export function orderBySavedIds<T extends { id: string }>(
+  items: T[],
+  savedOrder: string[],
+): T[] {
+  const byId = new Map(items.map((item) => [item.id, item]))
+  const ordered: T[] = []
+  for (const itemId of savedOrder) {
+    const item = byId.get(itemId)
+    if (!item) continue
+    ordered.push(item)
+    byId.delete(itemId)
+  }
+  for (const item of items) {
+    if (byId.delete(item.id)) ordered.push(item)
+  }
+  return ordered
+}
+
+export function mergeVisibleOrder(currentOrder: string[], visibleOrder: string[]): string[] {
+  const visible = uniqueStringIds(visibleOrder)
+  const visibleIds = new Set(visible)
+  return [
+    ...visible,
+    ...uniqueStringIds(currentOrder).filter((itemId) => !visibleIds.has(itemId)),
+  ]
 }
 
 export function estimatedStreamTokens(characterCount: number): number {
