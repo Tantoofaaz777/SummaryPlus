@@ -1390,14 +1390,14 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       entry.level === 'chapter' && !entry.deletedAt
     )).length ?? 0
     const hideAllButton = button(
-      'Hide all summarized messages',
+      'Hide summarized',
       () => send({ type: 'hide_all_summarized_messages' }),
       'is-quiet is-tint-primary',
       summarizedChapterCount === 0 || data.processing,
     )
     hideAllButton.classList.add('summaryplus-trimming-action')
     const unhideButton = button(
-      'Unhide SummaryPlus messages',
+      'Unhide messages',
       () => send({ type: 'unhide_summaryplus_messages' }),
       'is-quiet is-tint-primary',
       ownedHiddenMessageCount === 0 || data.processing,

@@ -102,7 +102,7 @@ The **Automation** card can automatically hide a Chapter's source messages after
 
 Trimming is disabled by default. Its delay is measured in completed Chapters: `0` hides a Chapter's messages immediately, `1` keeps the newest Chapter's messages visible, and `N` keeps the newest `N` Chapters visible. Arc and Volume promotion never changes message visibility.
 
-SummaryPlus records only messages that it changed from visible to hidden. Messages already hidden by the user are never claimed or unhidden by the extension. Deleting a Chapter unhides its SummaryPlus-owned source messages before releasing them. **Unhide SummaryPlus messages** is always available, restores all currently owned messages without reprocessing summaries, and releases their Chapters so a later automation reactivation can hide them again. **Hide all summarized messages** is also always available and hides every existing Chapter source immediately, ignoring the configured Chapter delay. Disabling trimming stops future automatic hides but does not automatically unhide previous ones.
+SummaryPlus records only messages that it changed from visible to hidden. Messages already hidden by the user are never claimed or unhidden by the extension. Deleting a Chapter unhides its SummaryPlus-owned source messages before releasing them. **Unhide messages** is always available, restores all currently owned messages without reprocessing summaries, and releases their Chapters so a later automation reactivation can hide them again. **Hide summarized** is also always available and hides every existing Chapter source immediately, ignoring the configured Chapter delay. Disabling trimming stops future automatic hides but does not automatically unhide previous ones.
 
 ## Defaults
 
