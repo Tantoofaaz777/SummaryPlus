@@ -160,7 +160,8 @@ function normalizeEntry(value) {
     createdAt: typeof candidate.createdAt === "string" ? candidate.createdAt : now,
     updatedAt: typeof candidate.updatedAt === "string" ? candidate.updatedAt : now,
     editedAt: typeof candidate.editedAt === "string" ? candidate.editedAt : undefined,
-    promotedToId: typeof candidate.promotedToId === "string" ? candidate.promotedToId : undefined
+    promotedToId: typeof candidate.promotedToId === "string" ? candidate.promotedToId : undefined,
+    deletedAt: typeof candidate.deletedAt === "string" ? candidate.deletedAt : undefined
   };
 }
 function normalizeChatState(value, historyApproved = false) {
@@ -224,6 +225,60 @@ function sourceText(items) {
   return items.map((item) => item.content).join(`
 
 `);
+}
+function deleteActiveEntry(state, entryId, deletedAt) {
+  const index = state.entries.findIndex((entry2) => entry2.id === entryId && entry2.active);
+  if (index < 0)
+    return null;
+  const entry = state.entries[index];
+  if (entry.level === "chapter") {
+    const releasedMessageIds = new Set(entry.sourceIds);
+    state.processedMessageIds = state.processedMessageIds.filter((id) => !releasedMessageIds.has(id));
+    entry.active = false;
+    entry.content = "";
+    entry.updatedAt = deletedAt;
+    entry.deletedAt = deletedAt;
+    delete entry.editedAt;
+    delete entry.promotedToId;
+    return {
+      level: entry.level,
+      restoredSourceCount: releasedMessageIds.size
+    };
+  }
+  const sourceLevel = entry.level === "arc" ? "chapter" : "arc";
+  const sourceIds = new Set(entry.sourceIds);
+  let restoredSourceCount = 0;
+  for (const source of state.entries) {
+    if (source.level === sourceLevel && sourceIds.has(source.id) && source.promotedToId === entry.id) {
+      source.active = true;
+      source.updatedAt = deletedAt;
+      delete source.promotedToId;
+      delete source.deletedAt;
+      restoredSourceCount += 1;
+    }
+  }
+  state.entries.splice(index, 1);
+  return {
+    level: entry.level,
+    restoredSourceCount
+  };
+}
+function restoreDeletedChapterSlot(state, sourceIds, content, restoredAt) {
+  const incomingIds = new Set(sourceIds);
+  const deletedChapters = state.entries.filter((entry) => entry.level === "chapter" && !entry.active && Boolean(entry.deletedAt) && !entry.promotedToId).sort((left, right) => left.orderStart - right.orderStart);
+  const exact = deletedChapters.find((entry) => entry.sourceIds.length === incomingIds.size && entry.sourceIds.every((id) => incomingIds.has(id)));
+  const overlapping = deletedChapters.find((entry) => entry.sourceIds.some((id) => incomingIds.has(id)));
+  const slot = exact ?? overlapping;
+  if (!slot)
+    return null;
+  slot.content = content;
+  slot.active = true;
+  slot.sourceIds = [...sourceIds];
+  slot.createdAt = restoredAt;
+  slot.updatedAt = restoredAt;
+  delete slot.editedAt;
+  delete slot.deletedAt;
+  return slot;
 }
 function entryCounts(state) {
   return {
@@ -493,25 +548,29 @@ async function createChapter(chatId, state, settings, signal, userId) {
     return "stale";
   }
   const createdAt = now();
-  const order = currentState.nextChapterOrder;
-  currentState.nextChapterOrder += 1;
+  const sourceIds = batch.map((message) => String(message.id));
   currentState.processedMessageIds = [
     ...new Set([
       ...currentState.processedMessageIds,
-      ...batch.map((message) => String(message.id))
+      ...sourceIds
     ])
   ];
-  currentState.entries.push({
-    id: id("chapter"),
-    level: "chapter",
-    content,
-    orderStart: order,
-    orderEnd: order,
-    active: true,
-    sourceIds: batch.map((message) => String(message.id)),
-    createdAt,
-    updatedAt: createdAt
-  });
+  const restored = restoreDeletedChapterSlot(currentState, sourceIds, content, createdAt);
+  if (!restored) {
+    const order = currentState.nextChapterOrder;
+    currentState.nextChapterOrder += 1;
+    currentState.entries.push({
+      id: id("chapter"),
+      level: "chapter",
+      content,
+      orderStart: order,
+      orderEnd: order,
+      active: true,
+      sourceIds,
+      createdAt,
+      updatedAt: createdAt
+    });
+  }
   delete currentState.lastError;
   await saveState(chatId, currentState);
   return "created";
@@ -666,6 +725,20 @@ async function saveEntryEdits(chatId, edits) {
   }
   await saveState(chatId, state);
 }
+async function deleteEntry(chatId, entryId) {
+  if (processingChats.has(chatId)) {
+    throw new Error("Wait for processing to finish, or cancel it before deleting summaries.");
+  }
+  const state = await ensureState(chatId);
+  const result = deleteActiveEntry(state, entryId, now());
+  if (!result)
+    throw new Error("This summary is no longer active.");
+  if (processingChats.has(chatId)) {
+    throw new Error("Processing started before the summary could be deleted. Try again after it finishes.");
+  }
+  await saveState(chatId, state);
+  return result;
+}
 function mergeSettings(current, incoming) {
   return normalizeSettings({
     ...current,
@@ -802,6 +875,23 @@ async function handleFrontendRequest(payload, userId) {
         text: result.text,
         cancelled: result.cancelled
       }, userId);
+      await publishSnapshot(userId);
+      return;
+    }
+    case "delete_entry": {
+      if (!chatId)
+        throw new Error("Open a chat before deleting summaries.");
+      if (typeof payload.entryId !== "string" || !payload.entryId) {
+        throw new Error("Invalid summary entry.");
+      }
+      const result = await deleteEntry(chatId, payload.entryId);
+      if (!result)
+        throw new Error("This summary is no longer active.");
+      const level = `${result.level[0].toUpperCase()}${result.level.slice(1)}`;
+      const restoredLevel = result.level === "arc" ? "Chapter" : "Arc";
+      const restoredLabel = `${restoredLevel}${result.restoredSourceCount === 1 ? "" : "s"}`;
+      const source = result.level === "chapter" ? "source messages restored" : `${result.restoredSourceCount} source ${restoredLabel} restored`;
+      publishActionSuccess(`${level} deleted; ${source}.`, userId);
       await publishSnapshot(userId);
       return;
     }

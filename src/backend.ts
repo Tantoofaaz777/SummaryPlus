@@ -10,6 +10,7 @@ import {
   STATE_KEY,
   allPrompts,
   createChatState,
+  deleteActiveEntry,
   entryCounts,
   isSameEntryBatch,
   isSameMessageBatch,
@@ -17,6 +18,7 @@ import {
   normalizeSettings,
   parseChatState,
   pendingMessages,
+  restoreDeletedChapterSlot,
   selectChapterBatch,
   selectedPrompt,
   selectPromotionBatch,
@@ -39,6 +41,7 @@ type FrontendRequest =
   | { type: 'process_now' }
   | { type: 'cancel_processing' }
   | { type: 'edit_entry'; entryId: string; value: string }
+  | { type: 'delete_entry'; entryId: string }
   | { type: 'save_entries'; entries: Array<{ id: string; content: string }> }
   | { type: 'save_settings'; settings: Partial<SummaryPlusSettings> }
   | { type: 'save_prompt'; prompt: Pick<PromptDefinition, 'id' | 'name' | 'systemPrompt' | 'userPrompt'> }
@@ -359,25 +362,34 @@ async function createChapter(
   }
 
   const createdAt = now()
-  const order = currentState.nextChapterOrder
-  currentState.nextChapterOrder += 1
+  const sourceIds = batch.map((message) => String(message.id))
   currentState.processedMessageIds = [
     ...new Set([
       ...currentState.processedMessageIds,
-      ...batch.map((message) => String(message.id)),
+      ...sourceIds,
     ]),
   ]
-  currentState.entries.push({
-    id: id('chapter'),
-    level: 'chapter',
+  const restored = restoreDeletedChapterSlot(
+    currentState,
+    sourceIds,
     content,
-    orderStart: order,
-    orderEnd: order,
-    active: true,
-    sourceIds: batch.map((message) => String(message.id)),
     createdAt,
-    updatedAt: createdAt,
-  })
+  )
+  if (!restored) {
+    const order = currentState.nextChapterOrder
+    currentState.nextChapterOrder += 1
+    currentState.entries.push({
+      id: id('chapter'),
+      level: 'chapter',
+      content,
+      orderStart: order,
+      orderEnd: order,
+      active: true,
+      sourceIds,
+      createdAt,
+      updatedAt: createdAt,
+    })
+  }
   delete currentState.lastError
   await saveState(chatId, currentState)
   return 'created'
@@ -586,6 +598,23 @@ async function saveEntryEdits(
   await saveState(chatId, state)
 }
 
+async function deleteEntry(
+  chatId: string,
+  entryId: string,
+): Promise<ReturnType<typeof deleteActiveEntry>> {
+  if (processingChats.has(chatId)) {
+    throw new Error('Wait for processing to finish, or cancel it before deleting summaries.')
+  }
+  const state = await ensureState(chatId)
+  const result = deleteActiveEntry(state, entryId, now())
+  if (!result) throw new Error('This summary is no longer active.')
+  if (processingChats.has(chatId)) {
+    throw new Error('Processing started before the summary could be deleted. Try again after it finishes.')
+  }
+  await saveState(chatId, state)
+  return result
+}
+
 function mergeSettings(
   current: SummaryPlusSettings,
   incoming: Partial<SummaryPlusSettings>,
@@ -733,6 +762,23 @@ async function handleFrontendRequest(payload: FrontendRequest, userId: string): 
         text: result.text,
         cancelled: result.cancelled,
       }, userId)
+      await publishSnapshot(userId)
+      return
+    }
+    case 'delete_entry': {
+      if (!chatId) throw new Error('Open a chat before deleting summaries.')
+      if (typeof payload.entryId !== 'string' || !payload.entryId) {
+        throw new Error('Invalid summary entry.')
+      }
+      const result = await deleteEntry(chatId, payload.entryId)
+      if (!result) throw new Error('This summary is no longer active.')
+      const level = `${result.level[0].toUpperCase()}${result.level.slice(1)}`
+      const restoredLevel = result.level === 'arc' ? 'Chapter' : 'Arc'
+      const restoredLabel = `${restoredLevel}${result.restoredSourceCount === 1 ? '' : 's'}`
+      const source = result.level === 'chapter'
+        ? 'source messages restored'
+        : `${result.restoredSourceCount} source ${restoredLabel} restored`
+      publishActionSuccess(`${level} deleted; ${source}.`, userId)
       await publishSnapshot(userId)
       return
     }

@@ -86,6 +86,10 @@ var EXPAND_ICON = `
 <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
   <path d="M8.5 4.5h-4v4M15.5 4.5h4v4M19.5 15.5v4h-4M4.5 15.5v4h4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>`;
+var DELETE_ICON = `
+<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <path d="M4.5 7h15M9.5 3.5h5L16 7H8l1.5-3.5ZM7 7l.75 13h8.5L17 7M10 10.5v6M14 10.5v6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>`;
 var STYLES = `
 .summaryplus-root {
   --sp-accent: var(--lumiverse-primary, #8b78f6);
@@ -193,22 +197,20 @@ var STYLES = `
 }
 .summaryplus-stack { display: flex; flex-direction: column; gap: 8px; }
 .summaryplus-entry {
-  appearance: none; display: flex; align-items: center; justify-content: space-between; gap: 12px;
-  width: 100%; min-height: 48px; padding: 11px 13px; border: 1px solid var(--sp-border);
+  display: flex; align-items: stretch; width: 100%; min-height: 48px; border: 1px solid var(--sp-border);
   border-radius: var(--lumiverse-radius, 8px); outline: none;
   background: var(--sp-surface-subtle); color: var(--sp-text); font: inherit; text-align: left;
-  cursor: pointer;
   transition:
     color var(--lumiverse-transition-fast, .15s ease),
     background var(--lumiverse-transition-fast, .15s ease),
     border-color var(--lumiverse-transition-fast, .15s ease),
     box-shadow var(--lumiverse-transition-fast, .15s ease);
 }
-.summaryplus-entry:hover:not(:disabled) {
+.summaryplus-entry:hover:not(.is-disabled) {
   border-color: var(--lumiverse-border-hover, var(--sp-border));
   background: var(--sp-surface);
 }
-.summaryplus-entry:focus-visible {
+.summaryplus-entry:focus-within {
   border-color: color-mix(in srgb, var(--sp-accent) 70%, var(--sp-border));
   box-shadow: 0 0 0 3px var(--sp-accent-soft);
 }
@@ -216,18 +218,42 @@ var STYLES = `
   border-color: var(--lumiverse-success-050, rgba(34, 197, 94, .5));
   background: var(--lumiverse-success-015, rgba(34, 197, 94, .15));
 }
-.summaryplus-entry:disabled { cursor: not-allowed; opacity: .48; }
+.summaryplus-entry.is-disabled { opacity: .48; }
+.summaryplus-entry-open {
+  appearance: none; display: flex; align-items: center; flex: 1 1 auto; min-width: 0;
+  border: 0; padding: 11px 8px 11px 13px; outline: none;
+  background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.summaryplus-entry-open:disabled, .summaryplus-entry-action:disabled { cursor: not-allowed; }
+.summaryplus-entry-actions {
+  display: flex; align-items: center; flex: 0 0 auto; gap: 5px; padding: 7px 9px 7px 0;
+}
+.summaryplus-entry-action {
+  appearance: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; border: 1px solid transparent; border-radius: var(--lumiverse-radius, 8px);
+  padding: 5px; background: transparent; color: var(--lumiverse-icon-muted, var(--sp-muted));
+  cursor: pointer; transition: color .16s, border-color .16s, background .16s, transform .12s;
+}
+.summaryplus-entry-action:hover:not(:disabled) { color: var(--sp-accent); background: var(--sp-accent-soft); }
+.summaryplus-entry-action:active:not(:disabled) { transform: translateY(1px); }
+.summaryplus-entry-action.is-delete {
+  color: var(--lumiverse-danger, #ef4444);
+  border-color: var(--lumiverse-danger-050, rgba(239, 68, 68, .5));
+  background: var(--lumiverse-danger-015, rgba(239, 68, 68, .15));
+}
+.summaryplus-entry-action.is-delete:hover:not(:disabled) {
+  color: var(--lumiverse-danger, #ef4444);
+  background: var(--lumiverse-danger-020, rgba(239, 68, 68, .2));
+}
 .summaryplus-entry-label {
   min-width: 0; overflow: hidden; color: var(--sp-text); font-size: 10px; font-weight: 800;
   letter-spacing: .1em; text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap;
 }
 .summaryplus-entry-icon {
-  display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;
-  width: 18px; height: 18px; color: var(--lumiverse-icon-muted, var(--sp-muted));
+  display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px;
 }
 .summaryplus-entry-icon svg { display: block; width: 100%; height: 100%; }
-.summaryplus-entry:hover:not(:disabled) .summaryplus-entry-icon { color: var(--sp-accent); }
-.summaryplus-entry.has-pending-change .summaryplus-entry-icon {
+.summaryplus-entry.has-pending-change .summaryplus-entry-action:not(.is-delete) {
   color: var(--lumiverse-success, #22c55e);
 }
 .summaryplus-textarea, .summaryplus-input, .summaryplus-select {
@@ -289,6 +315,14 @@ function entryTitle(entry) {
     return `Chapter ${entry.orderStart}`;
   return `${LEVEL_LABEL[entry.level]} · Chapters ${entry.orderStart}-${entry.orderEnd}`;
 }
+function deleteEntryMessage(entry) {
+  if (entry.level === "chapter") {
+    return `Delete ${entryTitle(entry)}? Its summary text will be permanently deleted and its source messages will become eligible for Chapter processing again.`;
+  }
+  const sourceLevel = entry.level === "arc" ? "Chapter" : "Arc";
+  const sourceLabel = `${sourceLevel}${entry.sourceIds.length === 1 ? "" : "s"}`;
+  return `Delete ${entryTitle(entry)}? Its summary text will be permanently deleted and its ${entry.sourceIds.length} source ${sourceLabel} will be restored.`;
+}
 function numberField(labelText, value, options = {}) {
   const field = element("label", "summaryplus-field");
   field.appendChild(element("span", "summaryplus-label", labelText));
@@ -322,6 +356,7 @@ function setup(ctx) {
   let filter = "all";
   let promptLevel = "chapter";
   let editingEntryId = null;
+  let deletingEntryId = null;
   let draftChatId = null;
   const entryDrafts = new Map;
   const promptDrafts = new Map;
@@ -336,10 +371,12 @@ function setup(ctx) {
   const syncDrafts = (next) => {
     if (draftChatId !== next.chatId) {
       entryDrafts.clear();
+      deletingEntryId = null;
       draftChatId = next.chatId;
     }
     if (!next.state) {
       entryDrafts.clear();
+      deletingEntryId = null;
     } else {
       const activeById = new Map(activeEntries(next.state).map((entry) => [entry.id, entry]));
       for (const [entryId, draft] of entryDrafts) {
@@ -347,6 +384,8 @@ function setup(ctx) {
         if (!entry || entry.content === draft)
           entryDrafts.delete(entryId);
       }
+      if (deletingEntryId && !activeById.has(deletingEntryId))
+        deletingEntryId = null;
     }
     for (const prompt of next.prompts) {
       if (!promptDrafts.has(prompt.id)) {
@@ -468,9 +507,9 @@ function setup(ctx) {
     const flushButton = button("Flush changes", () => {
       entryDrafts.clear();
       render();
-    }, "is-quiet is-tint-danger", data.processing || editingEntryId !== null || !hasPendingChanges);
-    const saveButton = button("Save changes", () => send({ type: "save_entries", entries: pendingEdits }), "is-quiet is-tint-success", data.processing || editingEntryId !== null || !hasPendingChanges);
-    const processButton = button(data.processing ? "Processing…" : "Process now", () => send({ type: "process_now" }), "is-quiet", data.processing || editingEntryId !== null || hasPendingChanges);
+    }, "is-quiet is-tint-danger", data.processing || editingEntryId !== null || deletingEntryId !== null || !hasPendingChanges);
+    const saveButton = button("Save changes", () => send({ type: "save_entries", entries: pendingEdits }), "is-quiet is-tint-success", data.processing || editingEntryId !== null || deletingEntryId !== null || !hasPendingChanges);
+    const processButton = button(data.processing ? "Processing…" : "Process now", () => send({ type: "process_now" }), "is-quiet", data.processing || editingEntryId !== null || deletingEntryId !== null || hasPendingChanges);
     toolbarActions.append(flushButton, saveButton, processButton);
     toolbar.append(filters, toolbarActions);
     content.appendChild(toolbar);
@@ -485,14 +524,13 @@ function setup(ctx) {
         const title = entryTitle(entry);
         const draft = entryDrafts.get(entry.id);
         const hasPendingChange = draft !== undefined && draft !== entry.content;
-        const card = element("button", `summaryplus-entry ${hasPendingChange ? "has-pending-change" : ""}`.trim());
-        const icon = element("span", "summaryplus-entry-icon");
-        card.type = "button";
-        card.disabled = data.processing || editingEntryId !== null;
-        card.setAttribute("aria-label", `Edit ${title} in expanded editor`);
-        icon.innerHTML = EXPAND_ICON;
-        card.append(element("span", "summaryplus-entry-label", title), icon);
-        card.addEventListener("click", () => {
+        const controlsDisabled = data.processing || editingEntryId !== null || deletingEntryId !== null;
+        const card = element("div", [
+          "summaryplus-entry",
+          hasPendingChange ? "has-pending-change" : "",
+          controlsDisabled ? "is-disabled" : ""
+        ].filter(Boolean).join(" "));
+        const openEditor = () => {
           editingEntryId = entry.id;
           render();
           ctx.sendToBackend({
@@ -500,7 +538,57 @@ function setup(ctx) {
             entryId: entry.id,
             value: draft ?? entry.content
           });
+        };
+        const openButton = element("button", "summaryplus-entry-open");
+        openButton.type = "button";
+        openButton.disabled = controlsDisabled;
+        openButton.setAttribute("aria-label", `Edit ${title} in expanded editor`);
+        openButton.appendChild(element("span", "summaryplus-entry-label", title));
+        openButton.addEventListener("click", openEditor);
+        const actions = element("div", "summaryplus-entry-actions");
+        const deleteButton = element("button", "summaryplus-entry-action is-delete");
+        deleteButton.type = "button";
+        deleteButton.disabled = controlsDisabled;
+        deleteButton.title = `Delete ${title}`;
+        deleteButton.setAttribute("aria-label", `Delete ${title}`);
+        const deleteIcon = element("span", "summaryplus-entry-icon");
+        deleteIcon.innerHTML = DELETE_ICON;
+        deleteButton.appendChild(deleteIcon);
+        deleteButton.addEventListener("click", async () => {
+          deletingEntryId = entry.id;
+          render();
+          let result;
+          try {
+            result = await ctx.ui.showConfirm({
+              title: `Delete ${LEVEL_LABEL[entry.level]}`,
+              message: deleteEntryMessage(entry),
+              variant: "danger",
+              confirmLabel: "Delete"
+            });
+          } catch {
+            deletingEntryId = null;
+            render();
+            return;
+          }
+          if (!result.confirmed) {
+            deletingEntryId = null;
+            render();
+            return;
+          }
+          entryDrafts.delete(entry.id);
+          send({ type: "delete_entry", entryId: entry.id });
         });
+        const expandButton = element("button", "summaryplus-entry-action");
+        expandButton.type = "button";
+        expandButton.disabled = controlsDisabled;
+        expandButton.title = `Edit ${title}`;
+        expandButton.setAttribute("aria-label", `Edit ${title} in expanded editor`);
+        const expandIcon = element("span", "summaryplus-entry-icon");
+        expandIcon.innerHTML = EXPAND_ICON;
+        expandButton.appendChild(expandIcon);
+        expandButton.addEventListener("click", openEditor);
+        actions.append(deleteButton, expandButton);
+        card.append(openButton, actions);
         stack.appendChild(card);
       }
       content.appendChild(stack);
@@ -754,6 +842,7 @@ function setup(ctx) {
       return;
     if (payload.type === "action_error") {
       editingEntryId = null;
+      deletingEntryId = null;
       render();
       return;
     }
@@ -779,6 +868,7 @@ function setup(ctx) {
   const unsubscribeActivate = tab.onActivate(() => send({ type: "request_snapshot" }));
   const unsubscribeChatSwitch = ctx.events.on("CHAT_SWITCHED", () => {
     editingEntryId = null;
+    deletingEntryId = null;
     entryDrafts.clear();
     draftChatId = null;
     send({ type: "request_snapshot" });

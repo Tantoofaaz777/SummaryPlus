@@ -17,6 +17,7 @@ export interface SummaryEntry {
   updatedAt: string
   editedAt?: string
   promotedToId?: string
+  deletedAt?: string
 }
 
 export interface SummaryError {
@@ -281,6 +282,7 @@ function normalizeEntry(value: unknown): SummaryEntry | null {
     updatedAt: typeof candidate.updatedAt === 'string' ? candidate.updatedAt : now,
     editedAt: typeof candidate.editedAt === 'string' ? candidate.editedAt : undefined,
     promotedToId: typeof candidate.promotedToId === 'string' ? candidate.promotedToId : undefined,
+    deletedAt: typeof candidate.deletedAt === 'string' ? candidate.deletedAt : undefined,
   }
 }
 
@@ -386,6 +388,93 @@ export function selectPromotionBatch(
 
 export function sourceText(items: Array<{ content: string }>): string {
   return items.map((item) => item.content).join('\n\n')
+}
+
+export interface DeleteEntryResult {
+  level: SummaryLevel
+  restoredSourceCount: number
+}
+
+export function deleteActiveEntry(
+  state: ChatState,
+  entryId: string,
+  deletedAt: string,
+): DeleteEntryResult | null {
+  const index = state.entries.findIndex((entry) => entry.id === entryId && entry.active)
+  if (index < 0) return null
+
+  const entry = state.entries[index]
+  if (entry.level === 'chapter') {
+    const releasedMessageIds = new Set(entry.sourceIds)
+    state.processedMessageIds = state.processedMessageIds.filter((id) => !releasedMessageIds.has(id))
+    entry.active = false
+    entry.content = ''
+    entry.updatedAt = deletedAt
+    entry.deletedAt = deletedAt
+    delete entry.editedAt
+    delete entry.promotedToId
+    return {
+      level: entry.level,
+      restoredSourceCount: releasedMessageIds.size,
+    }
+  }
+
+  const sourceLevel: SummaryLevel = entry.level === 'arc' ? 'chapter' : 'arc'
+  const sourceIds = new Set(entry.sourceIds)
+  let restoredSourceCount = 0
+  for (const source of state.entries) {
+    if (
+      source.level === sourceLevel
+      && sourceIds.has(source.id)
+      && source.promotedToId === entry.id
+    ) {
+      source.active = true
+      source.updatedAt = deletedAt
+      delete source.promotedToId
+      delete source.deletedAt
+      restoredSourceCount += 1
+    }
+  }
+  state.entries.splice(index, 1)
+  return {
+    level: entry.level,
+    restoredSourceCount,
+  }
+}
+
+export function restoreDeletedChapterSlot(
+  state: ChatState,
+  sourceIds: string[],
+  content: string,
+  restoredAt: string,
+): SummaryEntry | null {
+  const incomingIds = new Set(sourceIds)
+  const deletedChapters = state.entries
+    .filter((entry) => (
+      entry.level === 'chapter'
+      && !entry.active
+      && Boolean(entry.deletedAt)
+      && !entry.promotedToId
+    ))
+    .sort((left, right) => left.orderStart - right.orderStart)
+  const exact = deletedChapters.find((entry) => (
+    entry.sourceIds.length === incomingIds.size
+    && entry.sourceIds.every((id) => incomingIds.has(id))
+  ))
+  const overlapping = deletedChapters.find((entry) => (
+    entry.sourceIds.some((id) => incomingIds.has(id))
+  ))
+  const slot = exact ?? overlapping
+  if (!slot) return null
+
+  slot.content = content
+  slot.active = true
+  slot.sourceIds = [...sourceIds]
+  slot.createdAt = restoredAt
+  slot.updatedAt = restoredAt
+  delete slot.editedAt
+  delete slot.deletedAt
+  return slot
 }
 
 export function entryCounts(state: ChatState | null): Record<SummaryLevel, number> {

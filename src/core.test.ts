@@ -3,9 +3,11 @@ import {
   activeEntries,
   createChatState,
   createDefaultSettings,
+  deleteActiveEntry,
   macroValue,
   normalizeSettings,
   pendingMessages,
+  restoreDeletedChapterSlot,
   selectChapterBatch,
   selectPromotionBatch,
   type SummaryEntry,
@@ -120,5 +122,99 @@ describe('promotion and macros', () => {
     const state = createChatState(true)
     state.entries = [entry('First', 'chapter', 1), entry('Second', 'chapter', 2)]
     expect(macroValue(state, 'chapter')).toBe('First\n\nSecond')
+  })
+})
+
+describe('restorative deletion', () => {
+  test('deleting a Chapter releases its messages and preserves a reusable chronological slot', () => {
+    const state = createChatState(true)
+    state.processedMessageIds = ['m1', 'm2', 'm3']
+    state.entries = [{
+      ...entry('c1', 'chapter', 1),
+      sourceIds: ['m1', 'm2'],
+    }]
+
+    expect(deleteActiveEntry(state, 'c1', '2026-02-01T00:00:00.000Z')).toEqual({
+      level: 'chapter',
+      restoredSourceCount: 2,
+    })
+    expect(state.processedMessageIds).toEqual(['m3'])
+    expect(activeEntries(state)).toEqual([])
+    expect(state.entries[0]).toMatchObject({
+      id: 'c1',
+      active: false,
+      content: '',
+      deletedAt: '2026-02-01T00:00:00.000Z',
+    })
+
+    const restored = restoreDeletedChapterSlot(
+      state,
+      ['m1', 'm2'],
+      'regenerated',
+      '2026-02-02T00:00:00.000Z',
+    )
+    expect(restored).toMatchObject({
+      id: 'c1',
+      active: true,
+      content: 'regenerated',
+      orderStart: 1,
+      orderEnd: 1,
+      sourceIds: ['m1', 'm2'],
+    })
+    expect(restored?.deletedAt).toBeUndefined()
+  })
+
+  test('deleting an Arc restores its source Chapters and removes the Arc', () => {
+    const state = createChatState(true)
+    const chapter1 = {
+      ...entry('c1', 'chapter', 1),
+      active: false,
+      promotedToId: 'a1',
+    }
+    const chapter2 = {
+      ...entry('c2', 'chapter', 2),
+      active: false,
+      promotedToId: 'a1',
+    }
+    const arc = {
+      ...entry('a1', 'arc', 1, 2),
+      sourceIds: ['c1', 'c2'],
+    }
+    state.entries = [chapter1, chapter2, arc]
+
+    expect(deleteActiveEntry(state, 'a1', '2026-02-01T00:00:00.000Z')).toEqual({
+      level: 'arc',
+      restoredSourceCount: 2,
+    })
+    expect(state.entries.some((candidate) => candidate.id === 'a1')).toBe(false)
+    expect(activeEntries(state).map((candidate) => candidate.id)).toEqual(['c1', 'c2'])
+    expect(state.entries.every((candidate) => candidate.promotedToId === undefined)).toBe(true)
+  })
+
+  test('deleting a Volume restores only its direct source Arcs', () => {
+    const state = createChatState(true)
+    const chapter = {
+      ...entry('c1', 'chapter', 1),
+      active: false,
+      promotedToId: 'a1',
+    }
+    const arc = {
+      ...entry('a1', 'arc', 1, 8),
+      active: false,
+      sourceIds: ['c1'],
+      promotedToId: 'v1',
+    }
+    const volume = {
+      ...entry('v1', 'volume', 1, 8),
+      sourceIds: ['a1'],
+    }
+    state.entries = [chapter, arc, volume]
+
+    expect(deleteActiveEntry(state, 'v1', '2026-02-01T00:00:00.000Z')).toEqual({
+      level: 'volume',
+      restoredSourceCount: 1,
+    })
+    expect(activeEntries(state).map((candidate) => candidate.id)).toEqual(['a1'])
+    expect(chapter).toMatchObject({ active: false, promotedToId: 'a1' })
   })
 })
