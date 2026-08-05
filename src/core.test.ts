@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import {
   activeEntries,
+  chaptersReadyForTrimming,
   contextEntriesBefore,
   createChatState,
   createDefaultSettings,
@@ -21,6 +22,7 @@ import {
   restoreDeletedChapterSlot,
   selectChapterBatch,
   selectPromotionBatch,
+  summaryPlusHiddenMessageIds,
   type SummaryEntry,
 } from './core'
 
@@ -53,6 +55,8 @@ describe('settings', () => {
       chapterDelay: 2,
       arcsPerVolume: 8,
       arcDelay: 2,
+      hideSummarizedMessages: false,
+      hideDelayChapters: 1,
       retries: 1,
       temperature: 0.2,
       topP: 1,
@@ -65,6 +69,17 @@ describe('settings', () => {
   test('accepts an arbitrary non-negative retry count', () => {
     expect(normalizeSettings({ retries: 999_999 }).retries).toBe(999_999)
     expect(normalizeSettings({ retries: -10 }).retries).toBe(0)
+  })
+
+  test('normalizes an arbitrary non-negative Chapter trimming delay', () => {
+    expect(normalizeSettings({
+      hideSummarizedMessages: true,
+      hideDelayChapters: 999_999,
+    })).toMatchObject({
+      hideSummarizedMessages: true,
+      hideDelayChapters: 999_999,
+    })
+    expect(normalizeSettings({ hideDelayChapters: -10 }).hideDelayChapters).toBe(0)
   })
 
   test('normalizes regex selections and order as unique IDs', () => {
@@ -131,6 +146,65 @@ describe('chapter batching', () => {
       { id: '3', content: 'three' },
     ]
     expect(pendingMessages(messages, ['1', '2']).map((message) => message.id)).toEqual(['3'])
+  })
+})
+
+describe('message trimming', () => {
+  test('keeps the configured number of newest Chapters visible across promotion', () => {
+    const state = createChatState(true)
+    state.entries = [
+      {
+        ...entry('c1', 'chapter', 1),
+        active: false,
+        promotedToId: 'a1',
+        sourceIds: ['m1', 'm2'],
+      },
+      {
+        ...entry('c2', 'chapter', 2),
+        active: false,
+        promotedToId: 'a1',
+        sourceIds: ['m3', 'm4'],
+      },
+      {
+        ...entry('c3', 'chapter', 3),
+        sourceIds: ['m5', 'm6'],
+      },
+      {
+        ...entry('a1', 'arc', 1, 2),
+        sourceIds: ['c1', 'c2'],
+      },
+    ]
+
+    expect(chaptersReadyForTrimming(state, 1).map((chapter) => chapter.id))
+      .toEqual(['c1', 'c2'])
+    expect(chaptersReadyForTrimming(state, 2).map((chapter) => chapter.id))
+      .toEqual(['c1'])
+    expect(chaptersReadyForTrimming(state, 3)).toEqual([])
+  })
+
+  test('skips handled and deleted Chapters and deduplicates owned message ids', () => {
+    const state = createChatState(true)
+    state.entries = [
+      {
+        ...entry('c1', 'chapter', 1),
+        hideHandledAt: '2026-08-05T20:00:00.000Z',
+        autoHiddenSourceIds: ['m1', 'm2'],
+      },
+      {
+        ...entry('c2', 'chapter', 2),
+        autoHiddenSourceIds: ['m2', 'm3'],
+      },
+      {
+        ...entry('c3', 'chapter', 3),
+        active: false,
+        deletedAt: '2026-08-05T20:01:00.000Z',
+      },
+      entry('c4', 'chapter', 4),
+    ]
+
+    expect(chaptersReadyForTrimming(state, 0).map((chapter) => chapter.id))
+      .toEqual(['c2', 'c4'])
+    expect(summaryPlusHiddenMessageIds(state)).toEqual(['m1', 'm2', 'm3'])
   })
 })
 
@@ -257,6 +331,8 @@ describe('chat branch migration', () => {
         sourceOrderStart: 1,
         sourceOrderEnd: 4,
         sourceIds: ['s1', 's4'],
+        hideHandledAt: '2026-08-05T19:00:00.000Z',
+        autoHiddenSourceIds: ['s1'],
       },
       {
         ...entry('c2', 'chapter', 2),
@@ -298,6 +374,8 @@ describe('chat branch migration', () => {
       sourceIds: ['f1', 'f4'],
       sourceOrderStart: 1,
       sourceOrderEnd: 4,
+      hideHandledAt: '2026-08-05T19:00:00.000Z',
+      autoHiddenSourceIds: [],
     })
   })
 
@@ -383,6 +461,8 @@ describe('chat branch migration', () => {
     state.entries = [{
       ...entry('legacy', 'chapter', 1),
       sourceIds: ['source-one', 'source-three'],
+      hideHandledAt: '2026-08-05T19:00:00.000Z',
+      autoHiddenSourceIds: ['source-three'],
     }]
 
     const result = migrateChatStateForBranch({
@@ -405,6 +485,8 @@ describe('chat branch migration', () => {
       sourceIds: ['fork-one', 'fork-three'],
       sourceOrderStart: 1,
       sourceOrderEnd: 3,
+      hideHandledAt: '2026-08-05T19:00:00.000Z',
+      autoHiddenSourceIds: ['fork-three'],
     })
     expect(result.state.processedMessageIds).toEqual(['fork-one', 'fork-three'])
   })
@@ -552,6 +634,8 @@ describe('restorative deletion', () => {
     state.entries = [{
       ...entry('c1', 'chapter', 1),
       sourceIds: ['m1', 'm2'],
+      hideHandledAt: '2026-01-02T00:00:00.000Z',
+      autoHiddenSourceIds: ['m1'],
     }]
 
     expect(deleteActiveEntry(state, 'c1', '2026-02-01T00:00:00.000Z')).toEqual({
@@ -566,6 +650,8 @@ describe('restorative deletion', () => {
       content: '',
       deletedAt: '2026-02-01T00:00:00.000Z',
     })
+    expect(state.entries[0]?.hideHandledAt).toBeUndefined()
+    expect(state.entries[0]?.autoHiddenSourceIds).toBeUndefined()
 
     const restored = restoreDeletedChapterSlot(
       state,

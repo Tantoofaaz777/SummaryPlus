@@ -13,6 +13,7 @@ import {
   SETTINGS_PATH,
   STATE_KEY,
   allPrompts,
+  chaptersReadyForTrimming,
   contextEntriesBefore,
   createChatState,
   deleteActiveEntry,
@@ -37,6 +38,7 @@ import {
   selectedPrompt,
   selectPromotionBatch,
   sourceText,
+  summaryPlusHiddenMessageIds,
   estimatedStreamTokens,
   type ChatMessageLike,
   type ChatState,
@@ -66,6 +68,7 @@ type FrontendRequest =
   | { type: 'edit_entry'; entryId: string; value: string }
   | { type: 'regenerate_entry'; entryId: string }
   | { type: 'delete_entry'; entryId: string }
+  | { type: 'unhide_summaryplus_messages' }
   | { type: 'save_entries'; entries: Array<{ id: string; content: string }> }
   | { type: 'save_settings'; settings: Partial<SummaryPlusSettings> }
   | { type: 'save_prompt'; prompt: Pick<PromptDefinition, 'id' | 'name' | 'systemPrompt' | 'userPrompt'> }
@@ -94,6 +97,10 @@ const generationProgressByChat = new Map<string, GenerationProgress>()
 const frontendUserIds = new Set<string>()
 const branchHints = new Map<string, ChatForkedPayloadDTO>()
 const statePreparations = new Map<string, Promise<ChatState>>()
+const trimmingChats = new Set<string>()
+const queuedTrimmingChats = new Set<string>()
+
+const HIDDEN_MESSAGE_BATCH_LIMIT = 500
 
 function now(): string {
   return new Date().toISOString()
@@ -163,7 +170,110 @@ async function getMessages(chatId: string): Promise<ChatMessageLike[]> {
     role: message.role,
     indexInChat: message.index_in_chat,
     branchId: message.branch_id,
+    hidden: message.extra?.hidden === true,
   }))
+}
+
+async function setMessagesHiddenInBatches(
+  chatId: string,
+  messageIds: string[],
+  hidden: boolean,
+): Promise<void> {
+  const uniqueIds = [...new Set(messageIds.filter(Boolean))]
+  for (let index = 0; index < uniqueIds.length; index += HIDDEN_MESSAGE_BATCH_LIMIT) {
+    await spindle.chat.setMessagesHidden(
+      chatId,
+      uniqueIds.slice(index, index + HIDDEN_MESSAGE_BATCH_LIMIT),
+      hidden,
+    )
+  }
+}
+
+async function reconcileTrimming(chatId: string, userId?: string): Promise<void> {
+  const settings = await getSettings(userId)
+  if (!settings.hideSummarizedMessages) return
+
+  const [state, messages] = await Promise.all([
+    ensureState(chatId, 'view', userId),
+    getMessages(chatId),
+  ])
+  if (state.branchMigration?.status === 'failed') return
+
+  const messagesById = new Map(messages.map((message) => [String(message.id), message]))
+  for (const chapter of chaptersReadyForTrimming(state, settings.hideDelayChapters)) {
+    if (chapter.autoHiddenSourceIds === undefined) {
+      chapter.autoHiddenSourceIds = chapter.sourceIds.filter((sourceId) => {
+        const message = messagesById.get(sourceId)
+        return Boolean(message && !message.hidden)
+      })
+      // Persist ownership before mutating the chat so a partial API failure can
+      // always be retried or reversed without claiming user-hidden messages.
+      await saveState(chatId, state)
+    }
+
+    const existingOwnedIds = chapter.autoHiddenSourceIds.filter((sourceId) => (
+      messagesById.has(sourceId)
+    ))
+    await setMessagesHiddenInBatches(chatId, existingOwnedIds, true)
+    for (const sourceId of existingOwnedIds) {
+      const message = messagesById.get(sourceId)
+      if (message) message.hidden = true
+    }
+    chapter.hideHandledAt = now()
+    await saveState(chatId, state)
+  }
+}
+
+async function requestTrimming(chatId: string, userId?: string): Promise<void> {
+  queuedTrimmingChats.add(chatId)
+  if (processingChats.has(chatId) || trimmingChats.has(chatId)) return
+
+  trimmingChats.add(chatId)
+  try {
+    while (queuedTrimmingChats.delete(chatId)) {
+      try {
+        await reconcileTrimming(chatId, userId)
+      } catch (error) {
+        const message = errorMessage(error)
+        spindle.log.error(`SummaryPlus trimming failed for chat ${chatId}: ${message}`)
+        spindle.toast.error(`Automatic message hiding failed: ${message}`, {
+          title: 'SummaryPlus',
+          userId,
+        })
+        break
+      }
+    }
+  } finally {
+    trimmingChats.delete(chatId)
+    if (queuedChats.has(chatId) && !processingChats.has(chatId)) {
+      void runProcessing(chatId, userId)
+    }
+  }
+}
+
+async function unhideSummaryPlusMessages(chatId: string, userId?: string): Promise<number> {
+  if (processingChats.has(chatId)) {
+    throw new Error('Wait for processing to finish, or cancel it before unhiding messages.')
+  }
+  if (trimmingChats.has(chatId)) {
+    throw new Error('Wait for automatic message hiding to finish before unhiding messages.')
+  }
+
+  trimmingChats.add(chatId)
+  try {
+    const state = await ensureState(chatId, 'view', userId)
+    assertBranchReady(state)
+    const messageIds = summaryPlusHiddenMessageIds(state)
+    await setMessagesHiddenInBatches(chatId, messageIds, false)
+    for (const entry of state.entries) delete entry.autoHiddenSourceIds
+    await saveState(chatId, state)
+    return messageIds.length
+  } finally {
+    trimmingChats.delete(chatId)
+    if (queuedChats.has(chatId) && !processingChats.has(chatId)) {
+      void runProcessing(chatId, userId)
+    }
+  }
 }
 
 function metadataString(
@@ -923,7 +1033,7 @@ async function processPass(
 }
 
 async function runProcessing(chatId: string, userId?: string): Promise<void> {
-  if (processingChats.has(chatId)) {
+  if (processingChats.has(chatId) || trimmingChats.has(chatId)) {
     queuedChats.add(chatId)
     return
   }
@@ -948,6 +1058,7 @@ async function runProcessing(chatId: string, userId?: string): Promise<void> {
     queuedChats.delete(chatId)
     controllers.delete(chatId)
     generationProgressByChat.delete(chatId)
+    await requestTrimming(chatId, userId)
     await publishSnapshot(userId)
   }
 }
@@ -971,6 +1082,9 @@ async function editEntry(
 ): Promise<{ text: string; cancelled: boolean }> {
   if (processingChats.has(chatId)) {
     throw new Error('Wait for processing to finish, or cancel it before editing summaries.')
+  }
+  if (trimmingChats.has(chatId)) {
+    throw new Error('Wait for automatic message hiding to finish before editing summaries.')
   }
 
   const state = await ensureState(chatId)
@@ -1008,6 +1122,9 @@ async function saveEntryEdits(
   if (processingChats.has(chatId)) {
     throw new Error('Wait for processing to finish, or cancel it before editing summaries.')
   }
+  if (trimmingChats.has(chatId)) {
+    throw new Error('Wait for automatic message hiding to finish before editing summaries.')
+  }
   const state = await ensureState(chatId)
   const editsById = new Map(
     edits
@@ -1038,6 +1155,16 @@ async function deleteEntry(
   if (!requested) throw new Error('This summary is no longer active.')
   if (latestActiveEntry(state)?.id !== entryId) {
     throw new Error('Delete newer summaries first. Only the most recent active summary can be deleted.')
+  }
+  if (trimmingChats.has(chatId)) {
+    throw new Error('Wait for automatic message hiding to finish before deleting summaries.')
+  }
+  if (requested.level === 'chapter') {
+    await setMessagesHiddenInBatches(
+      chatId,
+      requested.autoHiddenSourceIds ?? [],
+      false,
+    )
   }
   const result = deleteActiveEntry(state, entryId, now())
   if (!result) throw new Error('A newer summary appeared. Delete it first.')
@@ -1211,6 +1338,13 @@ async function runRegeneration(
     )
     return
   }
+  if (trimmingChats.has(chatId)) {
+    publishActionError(
+      new Error('Wait for automatic message hiding to finish before regenerating.'),
+      userId,
+    )
+    return
+  }
 
   processingChats.add(chatId)
   queuedChats.delete(chatId)
@@ -1240,6 +1374,7 @@ async function runRegeneration(
     queuedChats.delete(chatId)
     controllers.delete(chatId)
     generationProgressByChat.delete(chatId)
+    await requestTrimming(chatId, userId)
     await publishSnapshot(userId)
   }
 }
@@ -1269,6 +1404,10 @@ async function saveGlobalSettings(
   await setSettings(next, userId)
   if (current.automationEnabled && !next.automationEnabled) {
     for (const controller of controllers.values()) controller.abort()
+  }
+  if (next.hideSummarizedMessages) {
+    const chatId = await activeChatId(userId)
+    if (chatId) await requestTrimming(chatId, userId)
   }
 }
 
@@ -1371,6 +1510,7 @@ async function handleFrontendRequest(payload: FrontendRequest, userId: string): 
       if (!chatId) throw new Error('Open a chat before synchronizing its branch.')
       const state = await ensureState(chatId, 'view', userId, true)
       assertBranchReady(state)
+      await requestTrimming(chatId, userId)
       publishActionSuccess('Branch memory synchronized.', userId)
       await publishSnapshot(userId)
       return
@@ -1452,6 +1592,18 @@ async function handleFrontendRequest(payload: FrontendRequest, userId: string): 
         ? 'source messages restored'
         : `${result.restoredSourceCount} source ${restoredLabel} restored`
       publishActionSuccess(`${level} deleted; ${source}.`, userId)
+      await publishSnapshot(userId)
+      return
+    }
+    case 'unhide_summaryplus_messages': {
+      if (!chatId) throw new Error('Open a chat before unhiding messages.')
+      const count = await unhideSummaryPlusMessages(chatId, userId)
+      publishActionSuccess(
+        count === 0
+          ? 'No messages are currently managed by SummaryPlus trimming.'
+          : `${count} ${count === 1 ? 'message' : 'messages'} unhidden.`,
+        userId,
+      )
       await publishSnapshot(userId)
       return
     }
@@ -1553,7 +1705,7 @@ spindle.onFrontendMessage((payload, userId) => {
 spindle.on('CHAT_FORKED', (payload, userId) => {
   branchHints.set(payload.forkedChatId, payload)
   void ensureState(payload.forkedChatId, 'view', userId, true)
-    .then((state) => {
+    .then(async (state) => {
       const migration = state.branchMigration
       if (migration?.status === 'failed') {
         spindle.toast.error(
@@ -1567,6 +1719,7 @@ spindle.on('CHAT_FORKED', (payload, userId) => {
           { title: 'SummaryPlus', userId },
         )
       }
+      await requestTrimming(payload.forkedChatId, userId)
       void publishSnapshot(userId)
     })
     .catch((error) => publishActionError(error, userId))
@@ -1580,7 +1733,10 @@ spindle.on('CHAT_SWITCHED', (payload, userId) => {
     return
   }
   void ensureState(chatId, 'view', userId, true)
-    .then(() => publishSnapshot(userId))
+    .then(async () => {
+      await requestTrimming(chatId, userId)
+      await publishSnapshot(userId)
+    })
     .catch((error) => publishActionError(error, userId))
 })
 
@@ -1607,7 +1763,7 @@ spindle.on('MESSAGE_SENT', (payload, userId) => {
 for (const event of ['MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'SWIPE_EDITED']) {
   spindle.on(event, (payload, userId) => {
     const chatId = chatIdFromPayload(payload)
-    if (!chatId || processingChats.has(chatId)) return
+    if (!chatId || processingChats.has(chatId) || trimmingChats.has(chatId)) return
     void publishSnapshot(userId)
   })
 }

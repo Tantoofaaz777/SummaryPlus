@@ -64,6 +64,8 @@ function createDefaultSettings() {
     chapterDelay: 2,
     arcsPerVolume: 8,
     arcDelay: 2,
+    hideSummarizedMessages: false,
+    hideDelayChapters: 1,
     retries: 1,
     connectionId: null,
     temperature: 0.2,
@@ -138,6 +140,8 @@ function normalizeSettings(value) {
     chapterDelay: integerAtLeast(candidate.chapterDelay, defaults.chapterDelay, 0),
     arcsPerVolume: integerAtLeast(candidate.arcsPerVolume, defaults.arcsPerVolume, 1),
     arcDelay: integerAtLeast(candidate.arcDelay, defaults.arcDelay, 0),
+    hideSummarizedMessages: typeof candidate.hideSummarizedMessages === "boolean" ? candidate.hideSummarizedMessages : defaults.hideSummarizedMessages,
+    hideDelayChapters: integerAtLeast(candidate.hideDelayChapters, defaults.hideDelayChapters, 0),
     retries: integerAtLeast(candidate.retries, defaults.retries, 0),
     connectionId: typeof candidate.connectionId === "string" && candidate.connectionId.trim() ? candidate.connectionId : null,
     temperature: Math.max(0, finiteNumber(candidate.temperature, defaults.temperature)),
@@ -176,7 +180,9 @@ function normalizeEntry(value) {
     updatedAt: typeof candidate.updatedAt === "string" ? candidate.updatedAt : now,
     editedAt: typeof candidate.editedAt === "string" ? candidate.editedAt : undefined,
     promotedToId: typeof candidate.promotedToId === "string" ? candidate.promotedToId : undefined,
-    deletedAt: typeof candidate.deletedAt === "string" ? candidate.deletedAt : undefined
+    deletedAt: typeof candidate.deletedAt === "string" ? candidate.deletedAt : undefined,
+    hideHandledAt: typeof candidate.hideHandledAt === "string" ? candidate.hideHandledAt : undefined,
+    autoHiddenSourceIds: Array.isArray(candidate.autoHiddenSourceIds) ? uniqueStringIds(candidate.autoHiddenSourceIds) : undefined
   };
 }
 function optionalNonNegativeInteger(value) {
@@ -296,6 +302,15 @@ function selectPromotionBatch(state, sourceLevel, size, delay) {
     return null;
   return candidates.slice(0, size);
 }
+function chaptersReadyForTrimming(state, delay) {
+  const chapters = state.entries.filter((entry) => entry.level === "chapter" && !entry.deletedAt).sort((left, right) => left.orderStart - right.orderStart || left.orderEnd - right.orderEnd || left.createdAt.localeCompare(right.createdAt));
+  const retainedCount = Math.max(0, Math.trunc(delay));
+  const eligibleCount = Math.max(0, chapters.length - retainedCount);
+  return chapters.slice(0, eligibleCount).filter((entry) => !entry.hideHandledAt);
+}
+function summaryPlusHiddenMessageIds(state) {
+  return uniqueStringIds(state.entries.flatMap((entry) => entry.autoHiddenSourceIds ?? []));
+}
 function sourceText(items) {
   return items.map((item) => item.content).join(`
 
@@ -395,6 +410,14 @@ function migrateChatStateForBranch(input) {
       if (rangeEnd > input.forkedAtMessageIndex)
         continue;
       entry.sourceIds = [...forkedByPosition.entries()].filter(([position]) => position >= rangeStart && position <= rangeEnd).sort(([left], [right]) => left - right).map(([, message]) => String(message.id));
+      if (entry.autoHiddenSourceIds) {
+        entry.autoHiddenSourceIds = entry.autoHiddenSourceIds.flatMap((sourceId) => {
+          const source = sourceById.get(sourceId);
+          const position = source ? messagePosition(source) : null;
+          const forkedSource = position === null ? undefined : forkedByPosition.get(position);
+          return forkedSource ? [String(forkedSource.id)] : [];
+        });
+      }
       retained.set(entry.id, entry);
       continue;
     }
@@ -422,6 +445,14 @@ function migrateChatStateForBranch(input) {
     if (crossesForkPoint)
       continue;
     entry.sourceIds = remappedSourceIds;
+    if (entry.autoHiddenSourceIds) {
+      entry.autoHiddenSourceIds = entry.autoHiddenSourceIds.flatMap((sourceId) => {
+        const source = sourceById.get(sourceId);
+        const position = source ? messagePosition(source) : null;
+        const forkedSource = position === null ? undefined : forkedByPosition.get(position);
+        return forkedSource ? [String(forkedSource.id)] : [];
+      });
+    }
     entry.sourceOrderStart = Math.min(...sourcePositions) + 1;
     entry.sourceOrderEnd = Math.max(...sourcePositions) + 1;
     retained.set(entry.id, entry);
@@ -550,6 +581,8 @@ function deleteActiveEntry(state, entryId, deletedAt) {
     entry.deletedAt = deletedAt;
     delete entry.editedAt;
     delete entry.promotedToId;
+    delete entry.hideHandledAt;
+    delete entry.autoHiddenSourceIds;
     return {
       level: entry.level,
       restoredSourceCount: releasedMessageIds.size
@@ -588,6 +621,8 @@ function restoreDeletedChapterSlot(state, sourceIds, content, restoredAt) {
   slot.updatedAt = restoredAt;
   delete slot.editedAt;
   delete slot.deletedAt;
+  delete slot.hideHandledAt;
+  delete slot.autoHiddenSourceIds;
   return slot;
 }
 function entryCounts(state) {
@@ -780,6 +815,9 @@ var generationProgressByChat = new Map;
 var frontendUserIds = new Set;
 var branchHints = new Map;
 var statePreparations = new Map;
+var trimmingChats = new Set;
+var queuedTrimmingChats = new Set;
+var HIDDEN_MESSAGE_BATCH_LIMIT = 500;
 function now() {
   return new Date().toISOString();
 }
@@ -834,8 +872,95 @@ async function getMessages(chatId) {
     content: typeof message.content === "string" ? message.content : "",
     role: message.role,
     indexInChat: message.index_in_chat,
-    branchId: message.branch_id
+    branchId: message.branch_id,
+    hidden: message.extra?.hidden === true
   }));
+}
+async function setMessagesHiddenInBatches(chatId, messageIds, hidden) {
+  const uniqueIds = [...new Set(messageIds.filter(Boolean))];
+  for (let index = 0;index < uniqueIds.length; index += HIDDEN_MESSAGE_BATCH_LIMIT) {
+    await spindle.chat.setMessagesHidden(chatId, uniqueIds.slice(index, index + HIDDEN_MESSAGE_BATCH_LIMIT), hidden);
+  }
+}
+async function reconcileTrimming(chatId, userId) {
+  const settings = await getSettings(userId);
+  if (!settings.hideSummarizedMessages)
+    return;
+  const [state, messages] = await Promise.all([
+    ensureState(chatId, "view", userId),
+    getMessages(chatId)
+  ]);
+  if (state.branchMigration?.status === "failed")
+    return;
+  const messagesById = new Map(messages.map((message) => [String(message.id), message]));
+  for (const chapter of chaptersReadyForTrimming(state, settings.hideDelayChapters)) {
+    if (chapter.autoHiddenSourceIds === undefined) {
+      chapter.autoHiddenSourceIds = chapter.sourceIds.filter((sourceId) => {
+        const message = messagesById.get(sourceId);
+        return Boolean(message && !message.hidden);
+      });
+      await saveState(chatId, state);
+    }
+    const existingOwnedIds = chapter.autoHiddenSourceIds.filter((sourceId) => messagesById.has(sourceId));
+    await setMessagesHiddenInBatches(chatId, existingOwnedIds, true);
+    for (const sourceId of existingOwnedIds) {
+      const message = messagesById.get(sourceId);
+      if (message)
+        message.hidden = true;
+    }
+    chapter.hideHandledAt = now();
+    await saveState(chatId, state);
+  }
+}
+async function requestTrimming(chatId, userId) {
+  queuedTrimmingChats.add(chatId);
+  if (processingChats.has(chatId) || trimmingChats.has(chatId))
+    return;
+  trimmingChats.add(chatId);
+  try {
+    while (queuedTrimmingChats.delete(chatId)) {
+      try {
+        await reconcileTrimming(chatId, userId);
+      } catch (error) {
+        const message = errorMessage(error);
+        spindle.log.error(`SummaryPlus trimming failed for chat ${chatId}: ${message}`);
+        spindle.toast.error(`Automatic message hiding failed: ${message}`, {
+          title: "SummaryPlus",
+          userId
+        });
+        break;
+      }
+    }
+  } finally {
+    trimmingChats.delete(chatId);
+    if (queuedChats.has(chatId) && !processingChats.has(chatId)) {
+      runProcessing(chatId, userId);
+    }
+  }
+}
+async function unhideSummaryPlusMessages(chatId, userId) {
+  if (processingChats.has(chatId)) {
+    throw new Error("Wait for processing to finish, or cancel it before unhiding messages.");
+  }
+  if (trimmingChats.has(chatId)) {
+    throw new Error("Wait for automatic message hiding to finish before unhiding messages.");
+  }
+  trimmingChats.add(chatId);
+  try {
+    const state = await ensureState(chatId, "view", userId);
+    assertBranchReady(state);
+    const messageIds = summaryPlusHiddenMessageIds(state);
+    await setMessagesHiddenInBatches(chatId, messageIds, false);
+    for (const entry of state.entries)
+      delete entry.autoHiddenSourceIds;
+    await saveState(chatId, state);
+    return messageIds.length;
+  } finally {
+    trimmingChats.delete(chatId);
+    if (queuedChats.has(chatId) && !processingChats.has(chatId)) {
+      runProcessing(chatId, userId);
+    }
+  }
 }
 function metadataString(metadata, key) {
   const value = metadata[key];
@@ -1379,7 +1504,7 @@ async function processPass(chatId, signal, userId) {
   throw new ProcessingCancelledError;
 }
 async function runProcessing(chatId, userId) {
-  if (processingChats.has(chatId)) {
+  if (processingChats.has(chatId) || trimmingChats.has(chatId)) {
     queuedChats.add(chatId);
     return;
   }
@@ -1402,6 +1527,7 @@ async function runProcessing(chatId, userId) {
     queuedChats.delete(chatId);
     controllers.delete(chatId);
     generationProgressByChat.delete(chatId);
+    await requestTrimming(chatId, userId);
     await publishSnapshot(userId);
   }
 }
@@ -1418,6 +1544,9 @@ function entryEditorTitle(entry) {
 async function editEntry(chatId, entryId, value, userId) {
   if (processingChats.has(chatId)) {
     throw new Error("Wait for processing to finish, or cancel it before editing summaries.");
+  }
+  if (trimmingChats.has(chatId)) {
+    throw new Error("Wait for automatic message hiding to finish before editing summaries.");
   }
   const state = await ensureState(chatId);
   const entry = state.entries.find((candidate) => candidate.id === entryId && candidate.active);
@@ -1446,6 +1575,9 @@ async function saveEntryEdits(chatId, edits) {
   if (processingChats.has(chatId)) {
     throw new Error("Wait for processing to finish, or cancel it before editing summaries.");
   }
+  if (trimmingChats.has(chatId)) {
+    throw new Error("Wait for automatic message hiding to finish before editing summaries.");
+  }
   const state = await ensureState(chatId);
   const editsById = new Map(edits.filter((edit) => typeof edit.id === "string" && typeof edit.content === "string").map((edit) => [edit.id, edit.content]));
   const editedAt = now();
@@ -1469,6 +1601,12 @@ async function deleteEntry(chatId, entryId) {
     throw new Error("This summary is no longer active.");
   if (latestActiveEntry(state)?.id !== entryId) {
     throw new Error("Delete newer summaries first. Only the most recent active summary can be deleted.");
+  }
+  if (trimmingChats.has(chatId)) {
+    throw new Error("Wait for automatic message hiding to finish before deleting summaries.");
+  }
+  if (requested.level === "chapter") {
+    await setMessagesHiddenInBatches(chatId, requested.autoHiddenSourceIds ?? [], false);
   }
   const result = deleteActiveEntry(state, entryId, now());
   if (!result)
@@ -1570,6 +1708,10 @@ async function runRegeneration(chatId, entryId, userId) {
     publishActionError(new Error("Wait for the current operation to finish, or cancel it before regenerating."), userId);
     return;
   }
+  if (trimmingChats.has(chatId)) {
+    publishActionError(new Error("Wait for automatic message hiding to finish before regenerating."), userId);
+    return;
+  }
   processingChats.add(chatId);
   queuedChats.delete(chatId);
   generationProgressByChat.delete(chatId);
@@ -1595,6 +1737,7 @@ async function runRegeneration(chatId, entryId, userId) {
     queuedChats.delete(chatId);
     controllers.delete(chatId);
     generationProgressByChat.delete(chatId);
+    await requestTrimming(chatId, userId);
     await publishSnapshot(userId);
   }
 }
@@ -1615,6 +1758,11 @@ async function saveGlobalSettings(incoming, userId) {
   if (current.automationEnabled && !next.automationEnabled) {
     for (const controller of controllers.values())
       controller.abort();
+  }
+  if (next.hideSummarizedMessages) {
+    const chatId = await activeChatId(userId);
+    if (chatId)
+      await requestTrimming(chatId, userId);
   }
 }
 async function saveCustomPrompt(incoming, userId) {
@@ -1706,6 +1854,7 @@ async function handleFrontendRequest(payload, userId) {
         throw new Error("Open a chat before synchronizing its branch.");
       const state = await ensureState(chatId, "view", userId, true);
       assertBranchReady(state);
+      await requestTrimming(chatId, userId);
       publishActionSuccess("Branch memory synchronized.", userId);
       await publishSnapshot(userId);
       return;
@@ -1794,6 +1943,14 @@ async function handleFrontendRequest(payload, userId) {
       await publishSnapshot(userId);
       return;
     }
+    case "unhide_summaryplus_messages": {
+      if (!chatId)
+        throw new Error("Open a chat before unhiding messages.");
+      const count = await unhideSummaryPlusMessages(chatId, userId);
+      publishActionSuccess(count === 0 ? "No messages are currently managed by SummaryPlus trimming." : `${count} ${count === 1 ? "message" : "messages"} unhidden.`, userId);
+      await publishSnapshot(userId);
+      return;
+    }
     case "save_entries":
       if (!chatId)
         throw new Error("Open a chat before editing summaries.");
@@ -1868,7 +2025,7 @@ spindle.onFrontendMessage((payload, userId) => {
 });
 spindle.on("CHAT_FORKED", (payload, userId) => {
   branchHints.set(payload.forkedChatId, payload);
-  ensureState(payload.forkedChatId, "view", userId, true).then((state) => {
+  ensureState(payload.forkedChatId, "view", userId, true).then(async (state) => {
     const migration = state.branchMigration;
     if (migration?.status === "failed") {
       spindle.toast.error(`Branch memory synchronization failed. ${migration.error ?? "Automation and macros are paused."}`, { title: "SummaryPlus", userId });
@@ -1876,6 +2033,7 @@ spindle.on("CHAT_FORKED", (payload, userId) => {
       const discarded = migration.discardedEntryCount ?? 0;
       spindle.toast.info(`Branch synchronized; ${discarded} future ${discarded === 1 ? "summary was" : "summaries were"} removed.`, { title: "SummaryPlus", userId });
     }
+    await requestTrimming(payload.forkedChatId, userId);
     publishSnapshot(userId);
   }).catch((error) => publishActionError(error, userId)).finally(() => branchHints.delete(payload.forkedChatId));
 });
@@ -1885,7 +2043,10 @@ spindle.on("CHAT_SWITCHED", (payload, userId) => {
     publishSnapshot(userId);
     return;
   }
-  ensureState(chatId, "view", userId, true).then(() => publishSnapshot(userId)).catch((error) => publishActionError(error, userId));
+  ensureState(chatId, "view", userId, true).then(async () => {
+    await requestTrimming(chatId, userId);
+    await publishSnapshot(userId);
+  }).catch((error) => publishActionError(error, userId));
 });
 spindle.on("MESSAGE_SENT", (payload, userId) => {
   const chatId = chatIdFromPayload(payload);
@@ -1906,7 +2067,7 @@ spindle.on("MESSAGE_SENT", (payload, userId) => {
 for (const event of ["MESSAGE_EDITED", "MESSAGE_DELETED", "MESSAGE_SWIPED", "SWIPE_EDITED"]) {
   spindle.on(event, (payload, userId) => {
     const chatId = chatIdFromPayload(payload);
-    if (!chatId || processingChats.has(chatId))
+    if (!chatId || processingChats.has(chatId) || trimmingChats.has(chatId))
       return;
     publishSnapshot(userId);
   });

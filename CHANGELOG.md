@@ -15,3 +15,4 @@
 - Darkened configuration containers with the same subtle Lumiverse surface used by SceneMap.
 - Added stable source-range labels to Chapter, Arc, and Volume cards, preserving deleted-message gaps.
 - Added branch-safe state migration with message-ID remapping, hierarchy rollback, macro guards, and failure recovery.
+- Added opt-in automatic message trimming with a Chapter delay, ownership-safe unhiding, deletion restoration, and branch remapping.

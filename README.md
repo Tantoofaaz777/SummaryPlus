@@ -14,7 +14,7 @@ The extension keeps the active entries at every level in chronological order and
 - At least one configured Lumiverse LLM connection
 - Permissions requested by the extension:
   - `generation` for quiet summary calls and connection discovery
-  - `chat_mutation` to read persisted chat history
+  - `chat_mutation` to read persisted chat history and optionally hide summarized messages
   - `chats` to identify the currently active chat
   - `regex_scripts` to list prompt-targeted Lumiverse regex
 
@@ -96,6 +96,14 @@ Each card identifies its direct source range: `CHAPTER 1 • MESSAGES 1-24`, `AR
 
 Only the most recent active entry can be regenerated or deleted. Regeneration reuses that entry's original messages, Chapters, or Arcs with the currently selected prompt and generation settings; optional context placeholders are resolved again from the current older timeline. The existing text is replaced only after a successful response, so cancellation, missing sources, or generation failure leaves it intact. Deletion works in the same newest-to-oldest order and releases the deleted entry's direct sources for processing again.
 
+## Automatic trimming
+
+The **Trimming** card can automatically hide a Chapter's source messages after successful Chapter creation. Lumiverse excludes hidden messages from normal prompt-history assembly while keeping them in persisted chat history, so SummaryPlus can still find the original sources for regeneration and branch synchronization.
+
+Trimming is disabled by default. Its delay is measured in completed Chapters: `0` hides a Chapter's messages immediately, `1` keeps the newest Chapter's messages visible, and `N` keeps the newest `N` Chapters visible. Arc and Volume promotion never changes message visibility.
+
+SummaryPlus records only messages that it changed from visible to hidden. Messages already hidden by the user are never claimed or unhidden by the extension. Deleting a Chapter unhides its SummaryPlus-owned source messages before releasing them, and **Unhide SummaryPlus messages** restores all currently owned messages without reprocessing summaries. Disabling trimming stops future hides but does not automatically unhide previous ones.
+
 ## Defaults
 
 | Setting | Default |
@@ -106,6 +114,8 @@ Only the most recent active entry can be regenerated or deleted. Regeneration re
 | Chapter delay | 2 |
 | Arcs per Volume | 8 |
 | Arc delay | 2 |
+| Hide summarized messages | Off |
+| Hide delay | 1 Chapter |
 | Retries after the first call | 1 |
 | Temperature | 0.2 |
 | Top P | 1 |

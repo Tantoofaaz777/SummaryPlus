@@ -2252,6 +2252,8 @@ function createDefaultSettings() {
     chapterDelay: 2,
     arcsPerVolume: 8,
     arcDelay: 2,
+    hideSummarizedMessages: false,
+    hideDelayChapters: 1,
     retries: 1,
     connectionId: null,
     temperature: 0.2,
@@ -2572,6 +2574,7 @@ var STYLES = `
   position: relative; display: inline-flex; align-items: center; justify-content: center;
   align-self: stretch; padding: 8px 10px 8px 4px; cursor: pointer;
 }
+.summaryplus-regex-toggle.summaryplus-settings-toggle { align-self: auto; padding: 0; }
 .summaryplus-regex-toggle input {
   position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none;
 }
@@ -2602,6 +2605,7 @@ var STYLES = `
   transform: translateX(14px);
   background: var(--lumiverse-primary-contrast, #fff);
 }
+.summaryplus-trimming-action { width: 100%; }
 .summaryplus-regex-ghost {
   opacity: 1 !important;
   border: 1px dashed var(--lumiverse-primary-050, var(--lumiverse-primary, var(--sp-accent))) !important;
@@ -3356,6 +3360,24 @@ function setup(ctx) {
     const arcDelay = numberField("Arc delay", settings.arcDelay, { min: 0, step: 1, defaultValue: defaults2.arcDelay });
     batchingGrid.append(messagesPerChapter.field, messageDelay.field, chaptersPerArc.field, chapterDelay.field, arcsPerVolume.field, arcDelay.field);
     batchingSection.appendChild(batchingGrid);
+    const trimmingSection = element("section", "summaryplus-section");
+    trimmingSection.appendChild(element("h3", "summaryplus-section-title", "Trimming"));
+    const trimmingRow = element("div", "summaryplus-switch");
+    trimmingRow.appendChild(element("div", "summaryplus-label", "Hide summarized messages"));
+    const trimmingToggle = element("label", "summaryplus-regex-toggle summaryplus-settings-toggle");
+    const hideSummarizedMessages = element("input");
+    hideSummarizedMessages.type = "checkbox";
+    hideSummarizedMessages.checked = settings.hideSummarizedMessages;
+    hideSummarizedMessages.setAttribute("aria-label", "Hide summarized messages");
+    const trimmingSwitch = element("span", "summaryplus-regex-switch");
+    trimmingSwitch.setAttribute("aria-hidden", "true");
+    trimmingToggle.append(hideSummarizedMessages, trimmingSwitch);
+    trimmingRow.appendChild(trimmingToggle);
+    const hideDelayChapters = numberField("Hide delay (Chapters)", settings.hideDelayChapters, { min: 0, step: 1, defaultValue: defaults2.hideDelayChapters });
+    const ownedHiddenMessageCount = new Set(data.state?.entries.flatMap((entry) => entry.autoHiddenSourceIds ?? []) ?? []).size;
+    const unhideButton = button("Unhide SummaryPlus messages", () => send({ type: "unhide_summaryplus_messages" }), "is-quiet is-tint-primary", ownedHiddenMessageCount === 0 || data.processing);
+    unhideButton.classList.add("summaryplus-trimming-action");
+    trimmingSection.append(trimmingRow, hideDelayChapters.field, unhideButton);
     const modelSection = element("section", "summaryplus-section");
     modelSection.appendChild(element("h3", "summaryplus-section-title", "Generation"));
     const modelGrid = element("div", "summaryplus-grid");
@@ -3443,6 +3465,8 @@ function setup(ctx) {
           chapterDelay: readNumber(chapterDelay.input, defaults2.chapterDelay),
           arcsPerVolume: readNumber(arcsPerVolume.input, defaults2.arcsPerVolume),
           arcDelay: readNumber(arcDelay.input, defaults2.arcDelay),
+          hideSummarizedMessages: hideSummarizedMessages.checked,
+          hideDelayChapters: readNumber(hideDelayChapters.input, defaults2.hideDelayChapters),
           retries: readNumber(retries.input, defaults2.retries),
           connectionId: connection.value || null,
           temperature: readNumber(temperature.input, defaults2.temperature),
@@ -3459,6 +3483,8 @@ function setup(ctx) {
       chapterDelay.input,
       arcsPerVolume.input,
       arcDelay.input,
+      hideSummarizedMessages,
+      hideDelayChapters.input,
       connection,
       temperature.input,
       topP.input,
@@ -3468,7 +3494,7 @@ function setup(ctx) {
     for (const control of settingsControls) {
       control.addEventListener("change", applySettings);
     }
-    content.append(automationSection, modelSection, batchingSection, regexSection);
+    content.append(automationSection, modelSection, batchingSection, trimmingSection, regexSection);
     return content;
   };
   function render() {

@@ -25,6 +25,8 @@ export interface SummaryEntry {
   editedAt?: string
   promotedToId?: string
   deletedAt?: string
+  hideHandledAt?: string
+  autoHiddenSourceIds?: string[]
 }
 
 export interface SummaryError {
@@ -75,6 +77,8 @@ export interface SummaryPlusSettings {
   chapterDelay: number
   arcsPerVolume: number
   arcDelay: number
+  hideSummarizedMessages: boolean
+  hideDelayChapters: number
   retries: number
   connectionId: string | null
   temperature: number
@@ -92,6 +96,7 @@ export interface ChatMessageLike {
   role?: 'system' | 'user' | 'assistant'
   indexInChat?: number
   branchId?: string | null
+  hidden?: boolean
 }
 
 export interface ConnectionOption {
@@ -190,6 +195,8 @@ export function createDefaultSettings(): SummaryPlusSettings {
     chapterDelay: 2,
     arcsPerVolume: 8,
     arcDelay: 2,
+    hideSummarizedMessages: false,
+    hideDelayChapters: 1,
     retries: 1,
     connectionId: null,
     temperature: 0.2,
@@ -287,6 +294,14 @@ export function normalizeSettings(value: unknown): SummaryPlusSettings {
     chapterDelay: integerAtLeast(candidate.chapterDelay, defaults.chapterDelay, 0),
     arcsPerVolume: integerAtLeast(candidate.arcsPerVolume, defaults.arcsPerVolume, 1),
     arcDelay: integerAtLeast(candidate.arcDelay, defaults.arcDelay, 0),
+    hideSummarizedMessages: typeof candidate.hideSummarizedMessages === 'boolean'
+      ? candidate.hideSummarizedMessages
+      : defaults.hideSummarizedMessages,
+    hideDelayChapters: integerAtLeast(
+      candidate.hideDelayChapters,
+      defaults.hideDelayChapters,
+      0,
+    ),
     retries: integerAtLeast(candidate.retries, defaults.retries, 0),
     connectionId: typeof candidate.connectionId === 'string' && candidate.connectionId.trim()
       ? candidate.connectionId
@@ -349,6 +364,12 @@ function normalizeEntry(value: unknown): SummaryEntry | null {
     editedAt: typeof candidate.editedAt === 'string' ? candidate.editedAt : undefined,
     promotedToId: typeof candidate.promotedToId === 'string' ? candidate.promotedToId : undefined,
     deletedAt: typeof candidate.deletedAt === 'string' ? candidate.deletedAt : undefined,
+    hideHandledAt: typeof candidate.hideHandledAt === 'string'
+      ? candidate.hideHandledAt
+      : undefined,
+    autoHiddenSourceIds: Array.isArray(candidate.autoHiddenSourceIds)
+      ? uniqueStringIds(candidate.autoHiddenSourceIds)
+      : undefined,
   }
 }
 
@@ -536,6 +557,30 @@ export function selectPromotionBatch(
   return candidates.slice(0, size)
 }
 
+export function chaptersReadyForTrimming(
+  state: ChatState,
+  delay: number,
+): SummaryEntry[] {
+  const chapters = state.entries
+    .filter((entry) => entry.level === 'chapter' && !entry.deletedAt)
+    .sort((left, right) => (
+      left.orderStart - right.orderStart
+      || left.orderEnd - right.orderEnd
+      || left.createdAt.localeCompare(right.createdAt)
+    ))
+  const retainedCount = Math.max(0, Math.trunc(delay))
+  const eligibleCount = Math.max(0, chapters.length - retainedCount)
+  return chapters
+    .slice(0, eligibleCount)
+    .filter((entry) => !entry.hideHandledAt)
+}
+
+export function summaryPlusHiddenMessageIds(state: ChatState): string[] {
+  return uniqueStringIds(
+    state.entries.flatMap((entry) => entry.autoHiddenSourceIds ?? []),
+  )
+}
+
 export function sourceText(items: Array<{ content: string }>): string {
   return items.map((item) => item.content).join('\n\n')
 }
@@ -714,6 +759,14 @@ export function migrateChatStateForBranch(
         .filter(([position]) => position >= rangeStart && position <= rangeEnd)
         .sort(([left], [right]) => left - right)
         .map(([, message]) => String(message.id))
+      if (entry.autoHiddenSourceIds) {
+        entry.autoHiddenSourceIds = entry.autoHiddenSourceIds.flatMap((sourceId) => {
+          const source = sourceById.get(sourceId)
+          const position = source ? messagePosition(source) : null
+          const forkedSource = position === null ? undefined : forkedByPosition.get(position)
+          return forkedSource ? [String(forkedSource.id)] : []
+        })
+      }
       retained.set(entry.id, entry)
       continue
     }
@@ -742,6 +795,14 @@ export function migrateChatStateForBranch(
     }
     if (crossesForkPoint) continue
     entry.sourceIds = remappedSourceIds
+    if (entry.autoHiddenSourceIds) {
+      entry.autoHiddenSourceIds = entry.autoHiddenSourceIds.flatMap((sourceId) => {
+        const source = sourceById.get(sourceId)
+        const position = source ? messagePosition(source) : null
+        const forkedSource = position === null ? undefined : forkedByPosition.get(position)
+        return forkedSource ? [String(forkedSource.id)] : []
+      })
+    }
     entry.sourceOrderStart = Math.min(...sourcePositions) + 1
     entry.sourceOrderEnd = Math.max(...sourcePositions) + 1
     retained.set(entry.id, entry)
@@ -921,6 +982,8 @@ export function deleteActiveEntry(
     entry.deletedAt = deletedAt
     delete entry.editedAt
     delete entry.promotedToId
+    delete entry.hideHandledAt
+    delete entry.autoHiddenSourceIds
     return {
       level: entry.level,
       restoredSourceCount: releasedMessageIds.size,
@@ -982,6 +1045,8 @@ export function restoreDeletedChapterSlot(
   slot.updatedAt = restoredAt
   delete slot.editedAt
   delete slot.deletedAt
+  delete slot.hideHandledAt
+  delete slot.autoHiddenSourceIds
   return slot
 }
 
