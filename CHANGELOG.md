@@ -14,3 +14,4 @@
 - Fixed regex dragging to keep the floating row opaque and show a distinct dashed drop placeholder.
 - Darkened configuration containers with the same subtle Lumiverse surface used by SceneMap.
 - Added stable source-range labels to Chapter, Arc, and Volume cards, preserving deleted-message gaps.
+- Added branch-safe state migration with message-ID remapping, hierarchy rollback, macro guards, and failure recovery.

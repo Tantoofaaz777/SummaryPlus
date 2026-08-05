@@ -1,5 +1,6 @@
 import type {
   ChatDTO,
+  ChatForkedPayloadDTO,
   ConnectionProfileDTO,
   GenerationRequestDTO,
   RegexScriptDTO,
@@ -23,6 +24,7 @@ import {
   latestActiveEntry,
   macroValue,
   mergeVisibleOrder,
+  migrateChatStateForBranch,
   nextEntrySequence,
   normalizeSettings,
   orderBySavedIds,
@@ -56,6 +58,8 @@ declare const spindle: SpindleAPI
 
 type FrontendRequest =
   | { type: 'request_snapshot' }
+  | { type: 'retry_branch_migration' }
+  | { type: 'reset_branch_state' }
   | { type: 'process_history' }
   | { type: 'process_now' }
   | { type: 'cancel_processing' }
@@ -88,6 +92,8 @@ const queuedChats = new Set<string>()
 const controllers = new Map<string, AbortController>()
 const generationProgressByChat = new Map<string, GenerationProgress>()
 const frontendUserIds = new Set<string>()
+const branchHints = new Map<string, ChatForkedPayloadDTO>()
+const statePreparations = new Map<string, Promise<ChatState>>()
 
 function now(): string {
   return new Date().toISOString()
@@ -156,23 +162,194 @@ async function getMessages(chatId: string): Promise<ChatMessageLike[]> {
     content: typeof message.content === 'string' ? message.content : '',
     role: message.role,
     indexInChat: message.index_in_chat,
+    branchId: message.branch_id,
   }))
+}
+
+function metadataString(
+  metadata: Record<string, unknown>,
+  key: string,
+): string | null {
+  const value = metadata[key]
+  return typeof value === 'string' && value ? value : null
+}
+
+function copiedBranchPoint(messages: ChatMessageLike[]): number | null {
+  const positions = messages
+    .filter((message) => typeof message.branchId === 'string' && message.branchId)
+    .map((message) => message.indexInChat)
+    .filter((value): value is number => (
+      typeof value === 'number' && Number.isInteger(value) && value >= 0
+    ))
+  return positions.length > 0 ? Math.max(...positions) : null
+}
+
+async function prepareExistingState(
+  chatId: string,
+  state: ChatState,
+  userId?: string,
+): Promise<ChatState> {
+  const chat = await spindle.chats.get(chatId, userId)
+  if (!chat) throw new Error('SummaryPlus could not inspect the current chat.')
+
+  const sourceChatId = metadataString(chat.metadata, 'branched_from')
+  if (!sourceChatId) {
+    if (state.ownerChatId && state.ownerChatId !== chatId) {
+      throw new Error('This SummaryPlus state belongs to another chat and cannot be adopted safely.')
+    }
+    state.ownerChatId = chatId
+    delete state.branchMigration
+    return state
+  }
+
+  const hint = branchHints.get(chatId)
+  const forkedMessages = await getMessages(chatId)
+  const forkedMessageIds = new Set(forkedMessages.map((message) => String(message.id)))
+  const containsPreMigrationBranchSummaries = state.entries.some((entry) => (
+    entry.level === 'chapter'
+    && entry.sourceIds.some((sourceId) => forkedMessageIds.has(sourceId))
+  ))
+  if (containsPreMigrationBranchSummaries) {
+    throw new Error(
+      'This branch already contains summaries created before branch synchronization was enabled, so it cannot be rewritten automatically.',
+    )
+  }
+  let sourceMessages: ChatMessageLike[] = []
+  try {
+    sourceMessages = await getMessages(sourceChatId)
+  } catch {
+    // Persisted source ranges can still migrate a branch whose parent was deleted.
+  }
+
+  const branchAtMessageId = metadataString(chat.metadata, 'branch_at_message')
+  const sourceForkMessage = branchAtMessageId
+    ? sourceMessages.find((message) => String(message.id) === branchAtMessageId)
+    : undefined
+  const sourceForkPosition = sourceForkMessage?.indexInChat
+  const forkedAtMessageIndex = (
+    hint
+    && hint.sourceChatId === sourceChatId
+    && hint.forkedChatId === chatId
+    && Number.isInteger(hint.forkedAtMessageIndex)
+  )
+    ? hint.forkedAtMessageIndex
+    : typeof sourceForkPosition === 'number' && Number.isInteger(sourceForkPosition)
+      ? sourceForkPosition
+      : copiedBranchPoint(forkedMessages)
+
+  if (forkedAtMessageIndex === null || forkedAtMessageIndex < 0) {
+    throw new Error('SummaryPlus could not determine where this chat branch begins.')
+  }
+
+  return migrateChatStateForBranch({
+    state,
+    sourceChatId,
+    forkedChatId: chatId,
+    forkedAtMessageIndex,
+    sourceMessages,
+    forkedMessages,
+    migratedAt: now(),
+  }).state
 }
 
 async function ensureState(
   chatId: string,
   discovery: 'view' | 'message' = 'view',
+  userId?: string,
+  forceBranchMigration = false,
 ): Promise<ChatState> {
   const existing = await loadState(chatId)
-  if (existing) return existing
+  if (
+    existing?.ownerChatId === chatId
+    && existing.branchMigration?.status !== 'failed'
+  ) {
+    return existing
+  }
+  if (
+    existing?.ownerChatId === chatId
+    && existing.branchMigration?.status === 'failed'
+    && !forceBranchMigration
+  ) {
+    return existing
+  }
 
-  const messages = await getMessages(chatId)
-  const historyLengthBeforeCurrentMessage = discovery === 'message'
-    ? Math.max(0, messages.length - 1)
-    : messages.length
-  const state = createChatState(historyLengthBeforeCurrentMessage <= 1)
-  await saveState(chatId, state)
-  return state
+  const running = statePreparations.get(chatId)
+  if (running) return running
+
+  const preparation = (async () => {
+    const current = await loadState(chatId)
+    if (
+      current?.ownerChatId === chatId
+      && current.branchMigration?.status !== 'failed'
+    ) {
+      return current
+    }
+    if (
+      current?.ownerChatId === chatId
+      && current.branchMigration?.status === 'failed'
+      && !forceBranchMigration
+    ) {
+      return current
+    }
+
+    if (!current) {
+      const messages = await getMessages(chatId)
+      const historyLengthBeforeCurrentMessage = discovery === 'message'
+        ? Math.max(0, messages.length - 1)
+        : messages.length
+      const state = createChatState(historyLengthBeforeCurrentMessage <= 1)
+      state.ownerChatId = chatId
+      await saveState(chatId, state)
+      return state
+    }
+
+    const previousOwnerChatId = current.ownerChatId
+    try {
+      const migrated = await prepareExistingState(chatId, current, userId)
+      await saveState(chatId, migrated)
+      return migrated
+    } catch (error) {
+      let failedSourceChatId = previousOwnerChatId ?? 'unknown'
+      try {
+        const failedChat = await spindle.chats.get(chatId, userId)
+        failedSourceChatId = metadataString(
+          failedChat?.metadata ?? {},
+          'branched_from',
+        ) ?? failedSourceChatId
+      } catch {
+        // Keep the best source identifier already available.
+      }
+      current.ownerChatId = chatId
+      current.branchMigration = {
+        status: 'failed',
+        sourceChatId: failedSourceChatId,
+        migratedAt: now(),
+        error: errorMessage(error),
+      }
+      await saveState(chatId, current)
+      spindle.log.error(
+        `SummaryPlus branch migration failed for chat ${chatId}: ${errorMessage(error)}`,
+      )
+      return current
+    }
+  })()
+
+  statePreparations.set(chatId, preparation)
+  try {
+    return await preparation
+  } finally {
+    if (statePreparations.get(chatId) === preparation) {
+      statePreparations.delete(chatId)
+    }
+  }
+}
+
+function assertBranchReady(state: ChatState): void {
+  if (state.branchMigration?.status !== 'failed') return
+  const detail = state.branchMigration.error
+    ? ` ${state.branchMigration.error}`
+    : ''
+  throw new Error(`Branch synchronization is incomplete.${detail}`)
 }
 
 async function activeChatId(userId?: string): Promise<string | null> {
@@ -277,10 +454,11 @@ async function createSnapshot(userId?: string): Promise<Snapshot> {
   }
 
   const [state, messages] = await Promise.all([
-    ensureState(chatId),
+    ensureState(chatId, 'view', userId),
     getMessages(chatId),
   ])
   ensureEntryDisplayMetadata(state, messages)
+  const branchReady = state.branchMigration?.status !== 'failed'
   return {
     chatId,
     state,
@@ -290,8 +468,10 @@ async function createSnapshot(userId?: string): Promise<Snapshot> {
     regexScripts,
     processing: processingChats.has(chatId),
     generationProgress: generationProgressByChat.get(chatId) ?? null,
-    pendingMessageCount: pendingMessages(messages, state.processedMessageIds).length,
-    activeCounts: entryCounts(state),
+    pendingMessageCount: branchReady
+      ? pendingMessages(messages, state.processedMessageIds).length
+      : 0,
+    activeCounts: branchReady ? entryCounts(state) : entryCounts(null),
   }
 }
 
@@ -703,7 +883,7 @@ async function processPass(
       ensureState(chatId),
       getSettings(userId),
     ])
-    if (!state.historyApproved) return
+    if (state.branchMigration?.status === 'failed' || !state.historyApproved) return
 
     const volumeResult = await createPromotion(
       chatId,
@@ -1187,9 +1367,30 @@ async function handleFrontendRequest(payload: FrontendRequest, userId: string): 
     case 'request_snapshot':
       await publishSnapshot(userId)
       return
+    case 'retry_branch_migration': {
+      if (!chatId) throw new Error('Open a chat before synchronizing its branch.')
+      const state = await ensureState(chatId, 'view', userId, true)
+      assertBranchReady(state)
+      publishActionSuccess('Branch memory synchronized.', userId)
+      await publishSnapshot(userId)
+      return
+    }
+    case 'reset_branch_state': {
+      if (!chatId) throw new Error('Open a chat before resetting its branch memory.')
+      const state = createChatState(false)
+      state.ownerChatId = chatId
+      await saveState(chatId, state)
+      publishActionSuccess(
+        'Branch memory reset. Approve history processing when you are ready.',
+        userId,
+      )
+      await publishSnapshot(userId)
+      return
+    }
     case 'process_history': {
       if (!chatId) throw new Error('Open a chat before processing history.')
-      const state = await ensureState(chatId)
+      const state = await ensureState(chatId, 'view', userId)
+      assertBranchReady(state)
       state.historyApproved = true
       delete state.lastError
       await saveState(chatId, state)
@@ -1198,16 +1399,21 @@ async function handleFrontendRequest(payload: FrontendRequest, userId: string): 
     }
     case 'process_now':
       if (!chatId) throw new Error('Open a chat before processing.')
-      if (!(await ensureState(chatId)).historyApproved) {
+      {
+        const state = await ensureState(chatId, 'view', userId)
+        assertBranchReady(state)
+        if (state.historyApproved) {
+          void runProcessing(chatId, userId)
+          return
+        }
         throw new Error('Approve existing chat history first.')
       }
-      void runProcessing(chatId, userId)
-      return
     case 'cancel_processing':
       if (chatId) cancelChat(chatId)
       return
     case 'edit_entry': {
       if (!chatId) throw new Error('Open a chat before editing summaries.')
+      assertBranchReady(await ensureState(chatId, 'view', userId))
       if (typeof payload.entryId !== 'string' || !payload.entryId) {
         throw new Error('Invalid summary entry.')
       }
@@ -1225,6 +1431,7 @@ async function handleFrontendRequest(payload: FrontendRequest, userId: string): 
     }
     case 'regenerate_entry':
       if (!chatId) throw new Error('Open a chat before regenerating summaries.')
+      assertBranchReady(await ensureState(chatId, 'view', userId))
       if (typeof payload.entryId !== 'string' || !payload.entryId) {
         throw new Error('Invalid summary entry.')
       }
@@ -1232,6 +1439,7 @@ async function handleFrontendRequest(payload: FrontendRequest, userId: string): 
       return
     case 'delete_entry': {
       if (!chatId) throw new Error('Open a chat before deleting summaries.')
+      assertBranchReady(await ensureState(chatId, 'view', userId))
       if (typeof payload.entryId !== 'string' || !payload.entryId) {
         throw new Error('Invalid summary entry.')
       }
@@ -1249,6 +1457,7 @@ async function handleFrontendRequest(payload: FrontendRequest, userId: string): 
     }
     case 'save_entries':
       if (!chatId) throw new Error('Open a chat before editing summaries.')
+      assertBranchReady(await ensureState(chatId, 'view', userId))
       if (!Array.isArray(payload.entries)) throw new Error('Invalid summary edits.')
       await saveEntryEdits(chatId, payload.entries)
       publishActionSuccess('Summary changes saved.', userId)
@@ -1297,6 +1506,9 @@ type PullMacroDefinition = {
   returnType: 'string'
   handler: (context: {
     env?: {
+      chat?: {
+        id?: string
+      }
       variables?: {
         chat?: Record<string, string>
       }
@@ -1317,7 +1529,17 @@ for (const level of LEVELS) {
     returnType: 'string',
     handler: (context) => {
       const raw = context.env?.variables?.chat?.[STATE_KEY]
-      return macroValue(parseChatState(raw), level)
+      const state = parseChatState(raw)
+      const currentChatId = context.env?.chat?.id
+      if (
+        !state
+        || !currentChatId
+        || state.ownerChatId !== currentChatId
+        || state.branchMigration?.status === 'failed'
+      ) {
+        return ''
+      }
+      return macroValue(state, level)
     },
   })
 }
@@ -1328,13 +1550,36 @@ spindle.onFrontendMessage((payload, userId) => {
   void handleFrontendRequest(payload, userId).catch((error) => publishActionError(error, userId))
 })
 
+spindle.on('CHAT_FORKED', (payload, userId) => {
+  branchHints.set(payload.forkedChatId, payload)
+  void ensureState(payload.forkedChatId, 'view', userId, true)
+    .then((state) => {
+      const migration = state.branchMigration
+      if (migration?.status === 'failed') {
+        spindle.toast.error(
+          `Branch memory synchronization failed. ${migration.error ?? 'Automation and macros are paused.'}`,
+          { title: 'SummaryPlus', userId },
+        )
+      } else if (migration?.status === 'complete' && (migration.discardedEntryCount ?? 0) > 0) {
+        const discarded = migration.discardedEntryCount ?? 0
+        spindle.toast.info(
+          `Branch synchronized; ${discarded} future ${discarded === 1 ? 'summary was' : 'summaries were'} removed.`,
+          { title: 'SummaryPlus', userId },
+        )
+      }
+      void publishSnapshot(userId)
+    })
+    .catch((error) => publishActionError(error, userId))
+    .finally(() => branchHints.delete(payload.forkedChatId))
+})
+
 spindle.on('CHAT_SWITCHED', (payload, userId) => {
   const chatId = chatIdFromPayload(payload)
   if (!chatId) {
     void publishSnapshot(userId)
     return
   }
-  void ensureState(chatId)
+  void ensureState(chatId, 'view', userId, true)
     .then(() => publishSnapshot(userId))
     .catch((error) => publishActionError(error, userId))
 })
@@ -1344,10 +1589,14 @@ spindle.on('MESSAGE_SENT', (payload, userId) => {
   if (!chatId) return
   void (async () => {
     const [state, settings] = await Promise.all([
-      ensureState(chatId, 'message'),
+      ensureState(chatId, 'message', userId),
       getSettings(userId),
     ])
-    if (state.historyApproved && settings.automationEnabled) {
+    if (
+      state.branchMigration?.status !== 'failed'
+      && state.historyApproved
+      && settings.automationEnabled
+    ) {
       void runProcessing(chatId, userId)
     } else {
       await publishSnapshot(userId)

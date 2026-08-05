@@ -179,6 +179,27 @@ function normalizeEntry(value) {
     deletedAt: typeof candidate.deletedAt === "string" ? candidate.deletedAt : undefined
   };
 }
+function optionalNonNegativeInteger(value) {
+  return Number.isInteger(value) && Number(value) >= 0 ? Number(value) : undefined;
+}
+function normalizeBranchMigration(value) {
+  if (!value || typeof value !== "object")
+    return;
+  const candidate = value;
+  if (candidate.status !== "complete" && candidate.status !== "failed" || typeof candidate.sourceChatId !== "string" || !candidate.sourceChatId || typeof candidate.migratedAt !== "string") {
+    return;
+  }
+  return {
+    status: candidate.status,
+    sourceChatId: candidate.sourceChatId,
+    forkedAtMessageIndex: optionalNonNegativeInteger(candidate.forkedAtMessageIndex),
+    migratedAt: candidate.migratedAt,
+    keptEntryCount: optionalNonNegativeInteger(candidate.keptEntryCount),
+    discardedEntryCount: optionalNonNegativeInteger(candidate.discardedEntryCount),
+    restoredEntryCount: optionalNonNegativeInteger(candidate.restoredEntryCount),
+    error: typeof candidate.error === "string" && candidate.error ? candidate.error : undefined
+  };
+}
 function normalizeChatState(value, historyApproved = false) {
   if (!value || typeof value !== "object")
     return createChatState(historyApproved);
@@ -186,13 +207,16 @@ function normalizeChatState(value, historyApproved = false) {
   const entries = Array.isArray(candidate.entries) ? candidate.entries.map(normalizeEntry).filter((entry) => entry !== null) : [];
   const maxOrder = entries.reduce((maximum, entry) => Math.max(maximum, entry.orderEnd), 0);
   const lastError = candidate.lastError && isLevel(candidate.lastError.level) && typeof candidate.lastError.message === "string" && typeof candidate.lastError.at === "string" ? { ...candidate.lastError } : undefined;
+  const branchMigration = normalizeBranchMigration(candidate.branchMigration);
   const state = {
     schemaVersion: 1,
+    ownerChatId: typeof candidate.ownerChatId === "string" && candidate.ownerChatId ? candidate.ownerChatId : undefined,
     historyApproved: typeof candidate.historyApproved === "boolean" ? candidate.historyApproved : historyApproved,
     nextChapterOrder: Math.max(maxOrder + 1, integerAtLeast(candidate.nextChapterOrder, maxOrder + 1, 1)),
     processedMessageIds: Array.isArray(candidate.processedMessageIds) ? [...new Set(candidate.processedMessageIds.map(String))] : [],
     entries,
-    lastError
+    lastError,
+    branchMigration
   };
   ensureEntryDisplayMetadata(state);
   return state;
@@ -325,6 +349,147 @@ function ensureEntryDisplayMetadata(state, messages = []) {
     }
   }
   return changed;
+}
+function messagePosition(message) {
+  return Number.isInteger(message.indexInChat) && Number(message.indexInChat) >= 0 ? Number(message.indexInChat) : null;
+}
+function messagesByPosition(messages, label) {
+  const indexed = new Map;
+  for (const message of messages) {
+    const position = messagePosition(message);
+    if (position === null)
+      continue;
+    if (indexed.has(position)) {
+      throw new Error(`${label} contains more than one message at position ${position + 1}.`);
+    }
+    indexed.set(position, message);
+  }
+  return indexed;
+}
+function migrateChatStateForBranch(input) {
+  if (!input.sourceChatId || !input.forkedChatId) {
+    throw new Error("Branch chat identifiers are missing.");
+  }
+  if (!Number.isInteger(input.forkedAtMessageIndex) || input.forkedAtMessageIndex < 0) {
+    throw new Error("The branch point does not have a valid message position.");
+  }
+  const migrated = normalizeChatState(input.state, input.state.historyApproved);
+  const sourceById = new Map;
+  for (const message of input.sourceMessages) {
+    sourceById.set(String(message.id), message);
+  }
+  const forkedByPosition = messagesByPosition(input.forkedMessages, "The forked chat");
+  messagesByPosition(input.sourceMessages, "The source chat");
+  const retained = new Map;
+  for (const entry of migrated.entries.filter((candidate) => candidate.level === "chapter")) {
+    const hasStoredRange = hasDisplayNumber(entry.sourceOrderStart) && hasDisplayNumber(entry.sourceOrderEnd);
+    if ((hasDisplayNumber(entry.sourceOrderStart) || hasDisplayNumber(entry.sourceOrderEnd)) && !hasStoredRange) {
+      throw new Error(`Chapter ${entry.sequence ?? entry.orderStart} has an incomplete source range.`);
+    }
+    if (hasStoredRange) {
+      const rangeStart = Number(entry.sourceOrderStart) - 1;
+      const rangeEnd = Number(entry.sourceOrderEnd) - 1;
+      if (rangeStart > rangeEnd) {
+        throw new Error(`Chapter ${entry.sequence ?? entry.orderStart} has an invalid source range.`);
+      }
+      if (rangeEnd > input.forkedAtMessageIndex)
+        continue;
+      entry.sourceIds = [...forkedByPosition.entries()].filter(([position]) => position >= rangeStart && position <= rangeEnd).sort(([left], [right]) => left - right).map(([, message]) => String(message.id));
+      retained.set(entry.id, entry);
+      continue;
+    }
+    if (entry.sourceIds.length === 0) {
+      throw new Error(`Chapter ${entry.sequence ?? entry.orderStart} has no recoverable sources.`);
+    }
+    const sourcePositions = [];
+    const remappedSourceIds = [];
+    let crossesForkPoint = false;
+    for (const sourceId of entry.sourceIds) {
+      const source = sourceById.get(sourceId);
+      const position = source ? messagePosition(source) : null;
+      if (position === null) {
+        throw new Error(`Chapter ${entry.sequence ?? entry.orderStart} cannot map source message ${sourceId}.`);
+      }
+      sourcePositions.push(position);
+      if (position > input.forkedAtMessageIndex) {
+        crossesForkPoint = true;
+        continue;
+      }
+      const forkedSource = forkedByPosition.get(position);
+      if (forkedSource)
+        remappedSourceIds.push(String(forkedSource.id));
+    }
+    if (crossesForkPoint)
+      continue;
+    entry.sourceIds = remappedSourceIds;
+    entry.sourceOrderStart = Math.min(...sourcePositions) + 1;
+    entry.sourceOrderEnd = Math.max(...sourcePositions) + 1;
+    retained.set(entry.id, entry);
+  }
+  for (const level of ["arc", "volume"]) {
+    const sourceLevel = level === "arc" ? "chapter" : "arc";
+    for (const entry of migrated.entries.filter((candidate) => candidate.level === level)) {
+      if (entry.sourceIds.length === 0)
+        continue;
+      const sourcesAreRetained = entry.sourceIds.every((sourceId) => {
+        const source = retained.get(sourceId);
+        return source?.level === sourceLevel && !source.deletedAt;
+      });
+      if (sourcesAreRetained)
+        retained.set(entry.id, entry);
+    }
+  }
+  const parentByChild = new Map;
+  for (const entry of retained.values()) {
+    if (entry.level === "chapter")
+      continue;
+    for (const sourceId of entry.sourceIds) {
+      if (parentByChild.has(sourceId)) {
+        throw new Error(`Summary ${sourceId} belongs to more than one retained parent.`);
+      }
+      parentByChild.set(sourceId, entry.id);
+    }
+  }
+  const originalActiveById = new Map(migrated.entries.map((entry) => [entry.id, entry.active]));
+  const retainedEntries = migrated.entries.filter((entry) => retained.has(entry.id));
+  for (const entry of retainedEntries) {
+    const parentId = parentByChild.get(entry.id);
+    if (entry.deletedAt) {
+      entry.active = false;
+      delete entry.promotedToId;
+    } else if (parentId) {
+      entry.active = false;
+      entry.promotedToId = parentId;
+    } else {
+      entry.active = true;
+      delete entry.promotedToId;
+    }
+  }
+  const restoredEntryCount = retainedEntries.filter((entry) => entry.active && originalActiveById.get(entry.id) === false).length;
+  const processedMessageIds = retainedEntries.filter((entry) => entry.level === "chapter" && !entry.deletedAt).flatMap((entry) => entry.sourceIds);
+  const maximumChapterOrder = retainedEntries.filter((entry) => entry.level === "chapter").reduce((maximum, entry) => Math.max(maximum, entry.orderEnd), 0);
+  const discardedEntryCount = migrated.entries.length - retainedEntries.length;
+  migrated.ownerChatId = input.forkedChatId;
+  migrated.nextChapterOrder = maximumChapterOrder + 1;
+  migrated.processedMessageIds = [...new Set(processedMessageIds)];
+  migrated.entries = retainedEntries;
+  delete migrated.lastError;
+  migrated.branchMigration = {
+    status: "complete",
+    sourceChatId: input.sourceChatId,
+    forkedAtMessageIndex: input.forkedAtMessageIndex,
+    migratedAt: input.migratedAt,
+    keptEntryCount: retainedEntries.length,
+    discardedEntryCount,
+    restoredEntryCount
+  };
+  ensureEntryDisplayMetadata(migrated, input.forkedMessages);
+  return {
+    state: migrated,
+    keptEntryCount: retainedEntries.length,
+    discardedEntryCount,
+    restoredEntryCount
+  };
 }
 function nextEntrySequence(state, level) {
   ensureEntryDisplayMetadata(state);
@@ -613,6 +778,8 @@ var queuedChats = new Set;
 var controllers = new Map;
 var generationProgressByChat = new Map;
 var frontendUserIds = new Set;
+var branchHints = new Map;
+var statePreparations = new Map;
 function now() {
   return new Date().toISOString();
 }
@@ -666,18 +833,123 @@ async function getMessages(chatId) {
     id: String(message.id),
     content: typeof message.content === "string" ? message.content : "",
     role: message.role,
-    indexInChat: message.index_in_chat
+    indexInChat: message.index_in_chat,
+    branchId: message.branch_id
   }));
 }
-async function ensureState(chatId, discovery = "view") {
+function metadataString(metadata, key) {
+  const value = metadata[key];
+  return typeof value === "string" && value ? value : null;
+}
+function copiedBranchPoint(messages) {
+  const positions = messages.filter((message) => typeof message.branchId === "string" && message.branchId).map((message) => message.indexInChat).filter((value) => typeof value === "number" && Number.isInteger(value) && value >= 0);
+  return positions.length > 0 ? Math.max(...positions) : null;
+}
+async function prepareExistingState(chatId, state, userId) {
+  const chat = await spindle.chats.get(chatId, userId);
+  if (!chat)
+    throw new Error("SummaryPlus could not inspect the current chat.");
+  const sourceChatId = metadataString(chat.metadata, "branched_from");
+  if (!sourceChatId) {
+    if (state.ownerChatId && state.ownerChatId !== chatId) {
+      throw new Error("This SummaryPlus state belongs to another chat and cannot be adopted safely.");
+    }
+    state.ownerChatId = chatId;
+    delete state.branchMigration;
+    return state;
+  }
+  const hint = branchHints.get(chatId);
+  const forkedMessages = await getMessages(chatId);
+  const forkedMessageIds = new Set(forkedMessages.map((message) => String(message.id)));
+  const containsPreMigrationBranchSummaries = state.entries.some((entry) => entry.level === "chapter" && entry.sourceIds.some((sourceId) => forkedMessageIds.has(sourceId)));
+  if (containsPreMigrationBranchSummaries) {
+    throw new Error("This branch already contains summaries created before branch synchronization was enabled, so it cannot be rewritten automatically.");
+  }
+  let sourceMessages = [];
+  try {
+    sourceMessages = await getMessages(sourceChatId);
+  } catch {}
+  const branchAtMessageId = metadataString(chat.metadata, "branch_at_message");
+  const sourceForkMessage = branchAtMessageId ? sourceMessages.find((message) => String(message.id) === branchAtMessageId) : undefined;
+  const sourceForkPosition = sourceForkMessage?.indexInChat;
+  const forkedAtMessageIndex = hint && hint.sourceChatId === sourceChatId && hint.forkedChatId === chatId && Number.isInteger(hint.forkedAtMessageIndex) ? hint.forkedAtMessageIndex : typeof sourceForkPosition === "number" && Number.isInteger(sourceForkPosition) ? sourceForkPosition : copiedBranchPoint(forkedMessages);
+  if (forkedAtMessageIndex === null || forkedAtMessageIndex < 0) {
+    throw new Error("SummaryPlus could not determine where this chat branch begins.");
+  }
+  return migrateChatStateForBranch({
+    state,
+    sourceChatId,
+    forkedChatId: chatId,
+    forkedAtMessageIndex,
+    sourceMessages,
+    forkedMessages,
+    migratedAt: now()
+  }).state;
+}
+async function ensureState(chatId, discovery = "view", userId, forceBranchMigration = false) {
   const existing = await loadState(chatId);
-  if (existing)
+  if (existing?.ownerChatId === chatId && existing.branchMigration?.status !== "failed") {
     return existing;
-  const messages = await getMessages(chatId);
-  const historyLengthBeforeCurrentMessage = discovery === "message" ? Math.max(0, messages.length - 1) : messages.length;
-  const state = createChatState(historyLengthBeforeCurrentMessage <= 1);
-  await saveState(chatId, state);
-  return state;
+  }
+  if (existing?.ownerChatId === chatId && existing.branchMigration?.status === "failed" && !forceBranchMigration) {
+    return existing;
+  }
+  const running = statePreparations.get(chatId);
+  if (running)
+    return running;
+  const preparation = (async () => {
+    const current = await loadState(chatId);
+    if (current?.ownerChatId === chatId && current.branchMigration?.status !== "failed") {
+      return current;
+    }
+    if (current?.ownerChatId === chatId && current.branchMigration?.status === "failed" && !forceBranchMigration) {
+      return current;
+    }
+    if (!current) {
+      const messages = await getMessages(chatId);
+      const historyLengthBeforeCurrentMessage = discovery === "message" ? Math.max(0, messages.length - 1) : messages.length;
+      const state = createChatState(historyLengthBeforeCurrentMessage <= 1);
+      state.ownerChatId = chatId;
+      await saveState(chatId, state);
+      return state;
+    }
+    const previousOwnerChatId = current.ownerChatId;
+    try {
+      const migrated = await prepareExistingState(chatId, current, userId);
+      await saveState(chatId, migrated);
+      return migrated;
+    } catch (error) {
+      let failedSourceChatId = previousOwnerChatId ?? "unknown";
+      try {
+        const failedChat = await spindle.chats.get(chatId, userId);
+        failedSourceChatId = metadataString(failedChat?.metadata ?? {}, "branched_from") ?? failedSourceChatId;
+      } catch {}
+      current.ownerChatId = chatId;
+      current.branchMigration = {
+        status: "failed",
+        sourceChatId: failedSourceChatId,
+        migratedAt: now(),
+        error: errorMessage(error)
+      };
+      await saveState(chatId, current);
+      spindle.log.error(`SummaryPlus branch migration failed for chat ${chatId}: ${errorMessage(error)}`);
+      return current;
+    }
+  })();
+  statePreparations.set(chatId, preparation);
+  try {
+    return await preparation;
+  } finally {
+    if (statePreparations.get(chatId) === preparation) {
+      statePreparations.delete(chatId);
+    }
+  }
+}
+function assertBranchReady(state) {
+  if (state.branchMigration?.status !== "failed")
+    return;
+  const detail = state.branchMigration.error ? ` ${state.branchMigration.error}` : "";
+  throw new Error(`Branch synchronization is incomplete.${detail}`);
 }
 async function activeChatId(userId) {
   const chat = await spindle.chats.getActive(userId);
@@ -761,10 +1033,11 @@ async function createSnapshot(userId) {
     };
   }
   const [state, messages] = await Promise.all([
-    ensureState(chatId),
+    ensureState(chatId, "view", userId),
     getMessages(chatId)
   ]);
   ensureEntryDisplayMetadata(state, messages);
+  const branchReady = state.branchMigration?.status !== "failed";
   return {
     chatId,
     state,
@@ -774,8 +1047,8 @@ async function createSnapshot(userId) {
     regexScripts,
     processing: processingChats.has(chatId),
     generationProgress: generationProgressByChat.get(chatId) ?? null,
-    pendingMessageCount: pendingMessages(messages, state.processedMessageIds).length,
-    activeCounts: entryCounts(state)
+    pendingMessageCount: branchReady ? pendingMessages(messages, state.processedMessageIds).length : 0,
+    activeCounts: branchReady ? entryCounts(state) : entryCounts(null)
   };
 }
 async function publishSnapshot(userId) {
@@ -1084,7 +1357,7 @@ async function processPass(chatId, signal, userId) {
       ensureState(chatId),
       getSettings(userId)
     ]);
-    if (!state.historyApproved)
+    if (state.branchMigration?.status === "failed" || !state.historyApproved)
       return;
     const volumeResult = await createPromotion(chatId, "volume", state, settings, signal, userId);
     if (volumeResult === "created")
@@ -1428,10 +1701,30 @@ async function handleFrontendRequest(payload, userId) {
     case "request_snapshot":
       await publishSnapshot(userId);
       return;
+    case "retry_branch_migration": {
+      if (!chatId)
+        throw new Error("Open a chat before synchronizing its branch.");
+      const state = await ensureState(chatId, "view", userId, true);
+      assertBranchReady(state);
+      publishActionSuccess("Branch memory synchronized.", userId);
+      await publishSnapshot(userId);
+      return;
+    }
+    case "reset_branch_state": {
+      if (!chatId)
+        throw new Error("Open a chat before resetting its branch memory.");
+      const state = createChatState(false);
+      state.ownerChatId = chatId;
+      await saveState(chatId, state);
+      publishActionSuccess("Branch memory reset. Approve history processing when you are ready.", userId);
+      await publishSnapshot(userId);
+      return;
+    }
     case "process_history": {
       if (!chatId)
         throw new Error("Open a chat before processing history.");
-      const state = await ensureState(chatId);
+      const state = await ensureState(chatId, "view", userId);
+      assertBranchReady(state);
       state.historyApproved = true;
       delete state.lastError;
       await saveState(chatId, state);
@@ -1441,11 +1734,15 @@ async function handleFrontendRequest(payload, userId) {
     case "process_now":
       if (!chatId)
         throw new Error("Open a chat before processing.");
-      if (!(await ensureState(chatId)).historyApproved) {
+      {
+        const state = await ensureState(chatId, "view", userId);
+        assertBranchReady(state);
+        if (state.historyApproved) {
+          runProcessing(chatId, userId);
+          return;
+        }
         throw new Error("Approve existing chat history first.");
       }
-      runProcessing(chatId, userId);
-      return;
     case "cancel_processing":
       if (chatId)
         cancelChat(chatId);
@@ -1453,6 +1750,7 @@ async function handleFrontendRequest(payload, userId) {
     case "edit_entry": {
       if (!chatId)
         throw new Error("Open a chat before editing summaries.");
+      assertBranchReady(await ensureState(chatId, "view", userId));
       if (typeof payload.entryId !== "string" || !payload.entryId) {
         throw new Error("Invalid summary entry.");
       }
@@ -1472,6 +1770,7 @@ async function handleFrontendRequest(payload, userId) {
     case "regenerate_entry":
       if (!chatId)
         throw new Error("Open a chat before regenerating summaries.");
+      assertBranchReady(await ensureState(chatId, "view", userId));
       if (typeof payload.entryId !== "string" || !payload.entryId) {
         throw new Error("Invalid summary entry.");
       }
@@ -1480,6 +1779,7 @@ async function handleFrontendRequest(payload, userId) {
     case "delete_entry": {
       if (!chatId)
         throw new Error("Open a chat before deleting summaries.");
+      assertBranchReady(await ensureState(chatId, "view", userId));
       if (typeof payload.entryId !== "string" || !payload.entryId) {
         throw new Error("Invalid summary entry.");
       }
@@ -1497,6 +1797,7 @@ async function handleFrontendRequest(payload, userId) {
     case "save_entries":
       if (!chatId)
         throw new Error("Open a chat before editing summaries.");
+      assertBranchReady(await ensureState(chatId, "view", userId));
       if (!Array.isArray(payload.entries))
         throw new Error("Invalid summary edits.");
       await saveEntryEdits(chatId, payload.entries);
@@ -1550,7 +1851,12 @@ for (const level of LEVELS) {
     returnType: "string",
     handler: (context) => {
       const raw = context.env?.variables?.chat?.[STATE_KEY];
-      return macroValue(parseChatState(raw), level);
+      const state = parseChatState(raw);
+      const currentChatId = context.env?.chat?.id;
+      if (!state || !currentChatId || state.ownerChatId !== currentChatId || state.branchMigration?.status === "failed") {
+        return "";
+      }
+      return macroValue(state, level);
     }
   });
 }
@@ -1560,13 +1866,26 @@ spindle.onFrontendMessage((payload, userId) => {
   frontendUserIds.add(userId);
   handleFrontendRequest(payload, userId).catch((error) => publishActionError(error, userId));
 });
+spindle.on("CHAT_FORKED", (payload, userId) => {
+  branchHints.set(payload.forkedChatId, payload);
+  ensureState(payload.forkedChatId, "view", userId, true).then((state) => {
+    const migration = state.branchMigration;
+    if (migration?.status === "failed") {
+      spindle.toast.error(`Branch memory synchronization failed. ${migration.error ?? "Automation and macros are paused."}`, { title: "SummaryPlus", userId });
+    } else if (migration?.status === "complete" && (migration.discardedEntryCount ?? 0) > 0) {
+      const discarded = migration.discardedEntryCount ?? 0;
+      spindle.toast.info(`Branch synchronized; ${discarded} future ${discarded === 1 ? "summary was" : "summaries were"} removed.`, { title: "SummaryPlus", userId });
+    }
+    publishSnapshot(userId);
+  }).catch((error) => publishActionError(error, userId)).finally(() => branchHints.delete(payload.forkedChatId));
+});
 spindle.on("CHAT_SWITCHED", (payload, userId) => {
   const chatId = chatIdFromPayload(payload);
   if (!chatId) {
     publishSnapshot(userId);
     return;
   }
-  ensureState(chatId).then(() => publishSnapshot(userId)).catch((error) => publishActionError(error, userId));
+  ensureState(chatId, "view", userId, true).then(() => publishSnapshot(userId)).catch((error) => publishActionError(error, userId));
 });
 spindle.on("MESSAGE_SENT", (payload, userId) => {
   const chatId = chatIdFromPayload(payload);
@@ -1574,10 +1893,10 @@ spindle.on("MESSAGE_SENT", (payload, userId) => {
     return;
   (async () => {
     const [state, settings] = await Promise.all([
-      ensureState(chatId, "message"),
+      ensureState(chatId, "message", userId),
       getSettings(userId)
     ]);
-    if (state.historyApproved && settings.automationEnabled) {
+    if (state.branchMigration?.status !== "failed" && state.historyApproved && settings.automationEnabled) {
       runProcessing(chatId, userId);
     } else {
       await publishSnapshot(userId);

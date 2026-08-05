@@ -33,13 +33,26 @@ export interface SummaryError {
   at: string
 }
 
+export interface BranchMigrationState {
+  status: 'complete' | 'failed'
+  sourceChatId: string
+  forkedAtMessageIndex?: number
+  migratedAt: string
+  keptEntryCount?: number
+  discardedEntryCount?: number
+  restoredEntryCount?: number
+  error?: string
+}
+
 export interface ChatState {
   schemaVersion: 1
+  ownerChatId?: string
   historyApproved: boolean
   nextChapterOrder: number
   processedMessageIds: string[]
   entries: SummaryEntry[]
   lastError?: SummaryError
+  branchMigration?: BranchMigrationState
 }
 
 export interface PromptDefinition {
@@ -78,6 +91,7 @@ export interface ChatMessageLike {
   content: string
   role?: 'system' | 'user' | 'assistant'
   indexInChat?: number
+  branchId?: string | null
 }
 
 export interface ConnectionOption {
@@ -338,6 +352,35 @@ function normalizeEntry(value: unknown): SummaryEntry | null {
   }
 }
 
+function optionalNonNegativeInteger(value: unknown): number | undefined {
+  return Number.isInteger(value) && Number(value) >= 0 ? Number(value) : undefined
+}
+
+function normalizeBranchMigration(value: unknown): BranchMigrationState | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const candidate = value as Partial<BranchMigrationState>
+  if (
+    (candidate.status !== 'complete' && candidate.status !== 'failed')
+    || typeof candidate.sourceChatId !== 'string'
+    || !candidate.sourceChatId
+    || typeof candidate.migratedAt !== 'string'
+  ) {
+    return undefined
+  }
+  return {
+    status: candidate.status,
+    sourceChatId: candidate.sourceChatId,
+    forkedAtMessageIndex: optionalNonNegativeInteger(candidate.forkedAtMessageIndex),
+    migratedAt: candidate.migratedAt,
+    keptEntryCount: optionalNonNegativeInteger(candidate.keptEntryCount),
+    discardedEntryCount: optionalNonNegativeInteger(candidate.discardedEntryCount),
+    restoredEntryCount: optionalNonNegativeInteger(candidate.restoredEntryCount),
+    error: typeof candidate.error === 'string' && candidate.error
+      ? candidate.error
+      : undefined,
+  }
+}
+
 export function normalizeChatState(value: unknown, historyApproved = false): ChatState {
   if (!value || typeof value !== 'object') return createChatState(historyApproved)
   const candidate = value as Partial<ChatState>
@@ -351,9 +394,13 @@ export function normalizeChatState(value: unknown, historyApproved = false): Cha
     && typeof candidate.lastError.at === 'string'
     ? { ...candidate.lastError }
     : undefined
+  const branchMigration = normalizeBranchMigration(candidate.branchMigration)
 
   const state: ChatState = {
     schemaVersion: 1,
+    ownerChatId: typeof candidate.ownerChatId === 'string' && candidate.ownerChatId
+      ? candidate.ownerChatId
+      : undefined,
     historyApproved: typeof candidate.historyApproved === 'boolean'
       ? candidate.historyApproved
       : historyApproved,
@@ -366,6 +413,7 @@ export function normalizeChatState(value: unknown, historyApproved = false): Cha
       : [],
     entries,
     lastError,
+    branchMigration,
   }
   ensureEntryDisplayMetadata(state)
   return state
@@ -580,6 +628,200 @@ export function ensureEntryDisplayMetadata(
   }
 
   return changed
+}
+
+export interface BranchMigrationInput {
+  state: ChatState
+  sourceChatId: string
+  forkedChatId: string
+  forkedAtMessageIndex: number
+  sourceMessages: ChatMessageLike[]
+  forkedMessages: ChatMessageLike[]
+  migratedAt: string
+}
+
+export interface BranchMigrationResult {
+  state: ChatState
+  keptEntryCount: number
+  discardedEntryCount: number
+  restoredEntryCount: number
+}
+
+function messagePosition(message: ChatMessageLike): number | null {
+  return Number.isInteger(message.indexInChat) && Number(message.indexInChat) >= 0
+    ? Number(message.indexInChat)
+    : null
+}
+
+function messagesByPosition(
+  messages: ChatMessageLike[],
+  label: string,
+): Map<number, ChatMessageLike> {
+  const indexed = new Map<number, ChatMessageLike>()
+  for (const message of messages) {
+    const position = messagePosition(message)
+    if (position === null) continue
+    if (indexed.has(position)) {
+      throw new Error(`${label} contains more than one message at position ${position + 1}.`)
+    }
+    indexed.set(position, message)
+  }
+  return indexed
+}
+
+export function migrateChatStateForBranch(
+  input: BranchMigrationInput,
+): BranchMigrationResult {
+  if (!input.sourceChatId || !input.forkedChatId) {
+    throw new Error('Branch chat identifiers are missing.')
+  }
+  if (
+    !Number.isInteger(input.forkedAtMessageIndex)
+    || input.forkedAtMessageIndex < 0
+  ) {
+    throw new Error('The branch point does not have a valid message position.')
+  }
+
+  const migrated = normalizeChatState(input.state, input.state.historyApproved)
+  const sourceById = new Map<string, ChatMessageLike>()
+  for (const message of input.sourceMessages) {
+    sourceById.set(String(message.id), message)
+  }
+  const forkedByPosition = messagesByPosition(input.forkedMessages, 'The forked chat')
+  messagesByPosition(input.sourceMessages, 'The source chat')
+
+  const retained = new Map<string, SummaryEntry>()
+  for (const entry of migrated.entries.filter((candidate) => candidate.level === 'chapter')) {
+    const hasStoredRange = (
+      hasDisplayNumber(entry.sourceOrderStart)
+      && hasDisplayNumber(entry.sourceOrderEnd)
+    )
+    if (
+      (hasDisplayNumber(entry.sourceOrderStart) || hasDisplayNumber(entry.sourceOrderEnd))
+      && !hasStoredRange
+    ) {
+      throw new Error(`Chapter ${entry.sequence ?? entry.orderStart} has an incomplete source range.`)
+    }
+
+    if (hasStoredRange) {
+      const rangeStart = Number(entry.sourceOrderStart) - 1
+      const rangeEnd = Number(entry.sourceOrderEnd) - 1
+      if (rangeStart > rangeEnd) {
+        throw new Error(`Chapter ${entry.sequence ?? entry.orderStart} has an invalid source range.`)
+      }
+      if (rangeEnd > input.forkedAtMessageIndex) continue
+      entry.sourceIds = [...forkedByPosition.entries()]
+        .filter(([position]) => position >= rangeStart && position <= rangeEnd)
+        .sort(([left], [right]) => left - right)
+        .map(([, message]) => String(message.id))
+      retained.set(entry.id, entry)
+      continue
+    }
+
+    if (entry.sourceIds.length === 0) {
+      throw new Error(`Chapter ${entry.sequence ?? entry.orderStart} has no recoverable sources.`)
+    }
+    const sourcePositions: number[] = []
+    const remappedSourceIds: string[] = []
+    let crossesForkPoint = false
+    for (const sourceId of entry.sourceIds) {
+      const source = sourceById.get(sourceId)
+      const position = source ? messagePosition(source) : null
+      if (position === null) {
+        throw new Error(
+          `Chapter ${entry.sequence ?? entry.orderStart} cannot map source message ${sourceId}.`,
+        )
+      }
+      sourcePositions.push(position)
+      if (position > input.forkedAtMessageIndex) {
+        crossesForkPoint = true
+        continue
+      }
+      const forkedSource = forkedByPosition.get(position)
+      if (forkedSource) remappedSourceIds.push(String(forkedSource.id))
+    }
+    if (crossesForkPoint) continue
+    entry.sourceIds = remappedSourceIds
+    entry.sourceOrderStart = Math.min(...sourcePositions) + 1
+    entry.sourceOrderEnd = Math.max(...sourcePositions) + 1
+    retained.set(entry.id, entry)
+  }
+
+  for (const level of ['arc', 'volume'] as const) {
+    const sourceLevel: SummaryLevel = level === 'arc' ? 'chapter' : 'arc'
+    for (const entry of migrated.entries.filter((candidate) => candidate.level === level)) {
+      if (entry.sourceIds.length === 0) continue
+      const sourcesAreRetained = entry.sourceIds.every((sourceId) => {
+        const source = retained.get(sourceId)
+        return source?.level === sourceLevel && !source.deletedAt
+      })
+      if (sourcesAreRetained) retained.set(entry.id, entry)
+    }
+  }
+
+  const parentByChild = new Map<string, string>()
+  for (const entry of retained.values()) {
+    if (entry.level === 'chapter') continue
+    for (const sourceId of entry.sourceIds) {
+      if (parentByChild.has(sourceId)) {
+        throw new Error(`Summary ${sourceId} belongs to more than one retained parent.`)
+      }
+      parentByChild.set(sourceId, entry.id)
+    }
+  }
+
+  const originalActiveById = new Map(
+    migrated.entries.map((entry) => [entry.id, entry.active]),
+  )
+  const retainedEntries = migrated.entries.filter((entry) => retained.has(entry.id))
+  for (const entry of retainedEntries) {
+    const parentId = parentByChild.get(entry.id)
+    if (entry.deletedAt) {
+      entry.active = false
+      delete entry.promotedToId
+    } else if (parentId) {
+      entry.active = false
+      entry.promotedToId = parentId
+    } else {
+      entry.active = true
+      delete entry.promotedToId
+    }
+  }
+
+  const restoredEntryCount = retainedEntries.filter((entry) => (
+    entry.active
+    && originalActiveById.get(entry.id) === false
+  )).length
+  const processedMessageIds = retainedEntries
+    .filter((entry) => entry.level === 'chapter' && !entry.deletedAt)
+    .flatMap((entry) => entry.sourceIds)
+  const maximumChapterOrder = retainedEntries
+    .filter((entry) => entry.level === 'chapter')
+    .reduce((maximum, entry) => Math.max(maximum, entry.orderEnd), 0)
+  const discardedEntryCount = migrated.entries.length - retainedEntries.length
+
+  migrated.ownerChatId = input.forkedChatId
+  migrated.nextChapterOrder = maximumChapterOrder + 1
+  migrated.processedMessageIds = [...new Set(processedMessageIds)]
+  migrated.entries = retainedEntries
+  delete migrated.lastError
+  migrated.branchMigration = {
+    status: 'complete',
+    sourceChatId: input.sourceChatId,
+    forkedAtMessageIndex: input.forkedAtMessageIndex,
+    migratedAt: input.migratedAt,
+    keptEntryCount: retainedEntries.length,
+    discardedEntryCount,
+    restoredEntryCount,
+  }
+  ensureEntryDisplayMetadata(migrated, input.forkedMessages)
+
+  return {
+    state: migrated,
+    keptEntryCount: retainedEntries.length,
+    discardedEntryCount,
+    restoredEntryCount,
+  }
 }
 
 export function nextEntrySequence(state: ChatState, level: 'arc' | 'volume'): number {

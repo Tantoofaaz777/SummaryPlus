@@ -80,6 +80,12 @@ When SummaryPlus first encounters a chat with more than its opening message, aut
 
 A chat first encountered with only its opening message is treated as new and may use automation immediately.
 
+## Chat branches
+
+SummaryPlus synchronizes Lumiverse chat branches without contacting the summarizing model. Fully inherited Chapters are remapped to the copied messages in the new chat. A Chapter that crosses the fork point is discarded from that branch, along with any Arc or Volume that depends on it; valid lower-level summaries are restored as active entries. The original chat is never modified, and the new branch continues with its own independent state and numbering.
+
+Branch synchronization runs on Lumiverse's `CHAT_FORKED` event and is also checked on first access, so untouched branches created while the extension was unavailable can be repaired later. If the source positions cannot be proven safely, automation and SummaryPlus macros are paused for that branch instead of processing potentially stale history. The Summary screen can retry synchronization or, after explicit confirmation, reset only that branch's SummaryPlus memory and return it to manual history approval.
+
 ## Promotion and editing
 
 When an Arc succeeds, its source Chapters become archived and disappear from the Chapter macro. When a Volume succeeds, its source Arcs do the same. Archived entries remain in persisted state with their parent reference; promotion is committed only after a successful model response.

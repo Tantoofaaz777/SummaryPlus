@@ -844,6 +844,39 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     }
     content.appendChild(stats)
 
+    if (data.state.branchMigration?.status === 'failed') {
+      const error = element(
+        'div',
+        'summaryplus-banner is-error',
+        `Branch memory synchronization failed. Automation and SummaryPlus macros are paused. ${data.state.branchMigration.error ?? ''}`.trim(),
+      )
+      const branchActions = element('div', 'summaryplus-actions')
+      branchActions.append(
+        button(
+          'Retry branch sync',
+          () => send({ type: 'retry_branch_migration' }),
+          'is-quiet is-tint-primary',
+          data.processing,
+        ),
+        button(
+          'Reset branch memory',
+          async () => {
+            const result = await ctx.ui.showConfirm({
+              title: 'Reset branch memory',
+              message: 'Delete all SummaryPlus summaries and processing state from this branch only? The original chat will not be changed.',
+              variant: 'danger',
+              confirmLabel: 'Reset',
+            })
+            if (result.confirmed) send({ type: 'reset_branch_state' })
+          },
+          'is-quiet is-tint-danger',
+          data.processing,
+        ),
+      )
+      content.append(error, branchActions)
+      return content
+    }
+
     if (!data.state.historyApproved) {
       const warning = element('div', 'summaryplus-banner is-warning')
       warning.append(

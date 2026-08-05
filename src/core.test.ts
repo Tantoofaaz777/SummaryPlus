@@ -11,6 +11,7 @@ import {
   hasValidContextPlaceholders,
   macroValue,
   mergeVisibleOrder,
+  migrateChatStateForBranch,
   nextEntrySequence,
   normalizeSettings,
   orderBySavedIds,
@@ -240,6 +241,190 @@ describe('summary display metadata', () => {
     expect(entryDisplayTitle(volume)).toBe('Volume 1 • Arcs 1-2')
     expect(nextEntrySequence(state, 'arc')).toBe(3)
     expect(nextEntrySequence(state, 'volume')).toBe(2)
+  })
+})
+
+describe('chat branch migration', () => {
+  test('remaps copied message ids, preserves gaps, and drops a Chapter crossing the fork', () => {
+    const state = createChatState(true)
+    state.ownerChatId = 'source-chat'
+    state.nextChapterOrder = 3
+    state.processedMessageIds = ['s1', 's4', 's5', 's8']
+    state.entries = [
+      {
+        ...entry('c1', 'chapter', 1),
+        sequence: 1,
+        sourceOrderStart: 1,
+        sourceOrderEnd: 4,
+        sourceIds: ['s1', 's4'],
+      },
+      {
+        ...entry('c2', 'chapter', 2),
+        sequence: 2,
+        sourceOrderStart: 5,
+        sourceOrderEnd: 8,
+        sourceIds: ['s5', 's8'],
+      },
+    ]
+
+    const result = migrateChatStateForBranch({
+      state,
+      sourceChatId: 'source-chat',
+      forkedChatId: 'forked-chat',
+      forkedAtMessageIndex: 4,
+      sourceMessages: [],
+      forkedMessages: [
+        { id: 'f1', content: 'one', indexInChat: 0 },
+        { id: 'f4', content: 'four', indexInChat: 3 },
+        { id: 'f5', content: 'five', indexInChat: 4 },
+      ],
+      migratedAt: '2026-08-05T20:00:00.000Z',
+    })
+
+    expect(result.discardedEntryCount).toBe(1)
+    expect(result.state).toMatchObject({
+      ownerChatId: 'forked-chat',
+      nextChapterOrder: 2,
+      processedMessageIds: ['f1', 'f4'],
+      branchMigration: {
+        status: 'complete',
+        sourceChatId: 'source-chat',
+        forkedAtMessageIndex: 4,
+      },
+    })
+    expect(result.state.entries).toHaveLength(1)
+    expect(result.state.entries[0]).toMatchObject({
+      id: 'c1',
+      sourceIds: ['f1', 'f4'],
+      sourceOrderStart: 1,
+      sourceOrderEnd: 4,
+    })
+  })
+
+  test('decomposes an invalid Volume and Arc while restoring the valid older Arc', () => {
+    const state = createChatState(true)
+    state.ownerChatId = 'source-chat'
+    const chapters = Array.from({ length: 4 }, (_, index) => ({
+      ...entry(`c${index + 1}`, 'chapter', index + 1),
+      sequence: index + 1,
+      sourceOrderStart: index * 2 + 1,
+      sourceOrderEnd: index * 2 + 2,
+      sourceIds: [`s${index * 2 + 1}`, `s${index * 2 + 2}`],
+      active: false,
+      promotedToId: index < 2 ? 'a1' : 'a2',
+    }))
+    const arc1 = {
+      ...entry('a1', 'arc', 1, 2),
+      sequence: 1,
+      sourceOrderStart: 1,
+      sourceOrderEnd: 2,
+      sourceIds: ['c1', 'c2'],
+      active: false,
+      promotedToId: 'v1',
+    }
+    const arc2 = {
+      ...entry('a2', 'arc', 3, 4),
+      sequence: 2,
+      sourceOrderStart: 3,
+      sourceOrderEnd: 4,
+      sourceIds: ['c3', 'c4'],
+      active: false,
+      promotedToId: 'v1',
+    }
+    const volume = {
+      ...entry('v1', 'volume', 1, 4),
+      sequence: 1,
+      sourceOrderStart: 1,
+      sourceOrderEnd: 2,
+      sourceIds: ['a1', 'a2'],
+    }
+    state.entries = [...chapters, arc1, arc2, volume]
+    state.processedMessageIds = Array.from({ length: 8 }, (_, index) => `s${index + 1}`)
+
+    const sourceMessages = Array.from({ length: 8 }, (_, index) => ({
+      id: `s${index + 1}`,
+      content: `source ${index + 1}`,
+      indexInChat: index,
+    }))
+    const forkedMessages = sourceMessages.slice(0, 5).map((message) => ({
+      ...message,
+      id: `f${message.indexInChat + 1}`,
+    }))
+    const result = migrateChatStateForBranch({
+      state,
+      sourceChatId: 'source-chat',
+      forkedChatId: 'forked-chat',
+      forkedAtMessageIndex: 4,
+      sourceMessages,
+      forkedMessages,
+      migratedAt: '2026-08-05T20:00:00.000Z',
+    })
+
+    expect(result.discardedEntryCount).toBe(4)
+    expect(result.restoredEntryCount).toBe(1)
+    expect(result.state.entries.map((item) => item.id)).toEqual(['c1', 'c2', 'a1'])
+    expect(activeEntries(result.state).map((item) => item.id)).toEqual(['a1'])
+    expect(result.state.entries.find((item) => item.id === 'a1')).toMatchObject({
+      active: true,
+    })
+    expect(result.state.entries.find((item) => item.id === 'c1')).toMatchObject({
+      active: false,
+      promotedToId: 'a1',
+    })
+    expect(result.state.processedMessageIds).toEqual(['f1', 'f2', 'f3', 'f4'])
+    expect(result.state.nextChapterOrder).toBe(3)
+    expect(macroValue(result.state, 'volume')).toBe('')
+    expect(macroValue(result.state, 'arc')).toBe('a1')
+  })
+
+  test('migrates legacy Chapters by matching source and fork positions', () => {
+    const state = createChatState(true)
+    state.ownerChatId = 'source-chat'
+    state.entries = [{
+      ...entry('legacy', 'chapter', 1),
+      sourceIds: ['source-one', 'source-three'],
+    }]
+
+    const result = migrateChatStateForBranch({
+      state,
+      sourceChatId: 'source-chat',
+      forkedChatId: 'forked-chat',
+      forkedAtMessageIndex: 2,
+      sourceMessages: [
+        { id: 'source-one', content: 'one', indexInChat: 0 },
+        { id: 'source-three', content: 'three', indexInChat: 2 },
+      ],
+      forkedMessages: [
+        { id: 'fork-one', content: 'one', indexInChat: 0 },
+        { id: 'fork-three', content: 'three', indexInChat: 2 },
+      ],
+      migratedAt: '2026-08-05T20:00:00.000Z',
+    })
+
+    expect(result.state.entries[0]).toMatchObject({
+      sourceIds: ['fork-one', 'fork-three'],
+      sourceOrderStart: 1,
+      sourceOrderEnd: 3,
+    })
+    expect(result.state.processedMessageIds).toEqual(['fork-one', 'fork-three'])
+  })
+
+  test('refuses a legacy migration when a source position cannot be proven', () => {
+    const state = createChatState(true)
+    state.entries = [{
+      ...entry('legacy', 'chapter', 1),
+      sourceIds: ['missing-source'],
+    }]
+
+    expect(() => migrateChatStateForBranch({
+      state,
+      sourceChatId: 'source-chat',
+      forkedChatId: 'forked-chat',
+      forkedAtMessageIndex: 2,
+      sourceMessages: [],
+      forkedMessages: [],
+      migratedAt: '2026-08-05T20:00:00.000Z',
+    })).toThrow('cannot map source message')
   })
 })
 
