@@ -3,6 +3,7 @@ import Sortable from 'sortablejs'
 import {
   LEVELS,
   activeEntries,
+  chapterReadiness,
   createDefaultSettings,
   entryDisplayTitle,
   type GenerationProgress,
@@ -174,6 +175,33 @@ const STYLES = `
 }
 .summaryplus-generation-retry[hidden] { display: none; }
 .summaryplus-generation-cancel { width: 100%; }
+.summaryplus-next-chapter {
+  display: flex; flex-direction: column; gap: 7px; width: 100%; padding: 10px 12px;
+  border: 1px solid var(--sp-secondary-border);
+  border-radius: var(--lumiverse-radius-md, 10px);
+  background: var(--sp-secondary);
+}
+.summaryplus-next-chapter-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  font-size: 11px; font-variant-numeric: tabular-nums;
+}
+.summaryplus-next-chapter-label {
+  color: var(--sp-text); font-weight: 750; letter-spacing: .04em; text-transform: uppercase;
+}
+.summaryplus-next-chapter-value { color: var(--sp-muted); text-align: right; }
+.summaryplus-next-chapter.is-ready .summaryplus-next-chapter-value {
+  color: var(--lumiverse-primary-text, var(--lumiverse-primary, var(--sp-accent)));
+  font-weight: 700;
+}
+.summaryplus-next-chapter-track {
+  height: 4px; overflow: hidden; border-radius: 2px;
+  background: var(--lumiverse-border, var(--sp-border));
+}
+.summaryplus-next-chapter-fill {
+  height: 100%; border-radius: inherit;
+  background: var(--lumiverse-primary, var(--sp-accent));
+  transition: width var(--lumiverse-transition-fast, .15s ease);
+}
 .summaryplus-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
 .summaryplus-stat { min-width: 0; padding: 8px 6px; border: 1px solid var(--sp-secondary-border); border-radius: var(--lumiverse-radius-md, 10px); background: var(--sp-secondary); text-align: center; }
 .summaryplus-stat strong { display: block; overflow: hidden; font-size: 15px; text-overflow: ellipsis; }
@@ -883,6 +911,36 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         ),
       )
       content.appendChild(generation)
+    } else if (data.state.branchMigration?.status !== 'failed') {
+      const readiness = chapterReadiness(data.pendingMessageCount, data.settings)
+      const ready = readiness.remainingMessages === 0
+      const remainingLabel = readiness.remainingMessages === 1
+        ? '1 message remaining'
+        : `${readiness.remainingMessages} messages remaining`
+      const nextChapter = element(
+        'section',
+        `summaryplus-next-chapter ${ready ? 'is-ready' : ''}`.trim(),
+      )
+      const heading = element('div', 'summaryplus-next-chapter-head')
+      heading.append(
+        element('span', 'summaryplus-next-chapter-label', 'Next Chapter'),
+        element('span', 'summaryplus-next-chapter-value', ready ? 'Ready' : remainingLabel),
+      )
+      const track = element('div', 'summaryplus-next-chapter-track')
+      track.setAttribute('role', 'progressbar')
+      track.setAttribute('aria-label', 'Progress toward the next Chapter')
+      track.setAttribute('aria-valuemin', '0')
+      track.setAttribute('aria-valuemax', String(readiness.requiredMessages))
+      track.setAttribute(
+        'aria-valuenow',
+        String(Math.min(readiness.countedMessages, readiness.requiredMessages)),
+      )
+      track.setAttribute('aria-valuetext', ready ? 'Ready' : remainingLabel)
+      const fill = element('div', 'summaryplus-next-chapter-fill')
+      fill.style.width = `${readiness.percentage}%`
+      track.appendChild(fill)
+      nextChapter.append(heading, track)
+      content.appendChild(nextChapter)
     }
 
     const stats = element('div', 'summaryplus-stats')

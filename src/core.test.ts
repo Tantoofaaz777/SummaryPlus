@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import {
   activeEntries,
+  chapterReadiness,
   chapterOrderForSources,
   chaptersReadyForTrimming,
   contextEntriesBefore,
@@ -116,6 +117,29 @@ describe('regex ordering', () => {
 })
 
 describe('chapter batching', () => {
+  test('reports progress toward the next Chapter including its message delay', () => {
+    const settings = { messagesPerChapter: 6, messageDelay: 3 }
+
+    expect(chapterReadiness(3, settings)).toEqual({
+      requiredMessages: 9,
+      countedMessages: 3,
+      remainingMessages: 6,
+      percentage: 33,
+    })
+    expect(chapterReadiness(8, settings)).toMatchObject({
+      remainingMessages: 1,
+      percentage: 89,
+    })
+    expect(chapterReadiness(9, settings)).toMatchObject({
+      remainingMessages: 0,
+      percentage: 100,
+    })
+    expect(chapterReadiness(14, settings)).toMatchObject({
+      remainingMessages: 0,
+      percentage: 100,
+    })
+  })
+
   test('waits for a full batch plus the lookahead delay and excludes the delay', () => {
     const settings = { ...createDefaultSettings(), messagesPerChapter: 6, messageDelay: 3 }
     const state = createChatState(true)

@@ -119,6 +119,13 @@ export interface GenerationProgress {
   maxAttempts: number
 }
 
+export interface ChapterReadiness {
+  requiredMessages: number
+  countedMessages: number
+  remainingMessages: number
+  percentage: number
+}
+
 export interface RegexOption {
   id: string
   name: string
@@ -545,6 +552,24 @@ export function pendingMessages(
 ): ChatMessageLike[] {
   const processed = new Set(processedMessageIds)
   return messages.filter((message) => !processed.has(String(message.id)))
+}
+
+export function chapterReadiness(
+  pendingMessageCount: number,
+  settings: Pick<SummaryPlusSettings, 'messagesPerChapter' | 'messageDelay'>,
+): ChapterReadiness {
+  const requiredMessages = Math.max(
+    1,
+    Math.trunc(settings.messagesPerChapter) + Math.trunc(settings.messageDelay),
+  )
+  const countedMessages = Math.max(0, Math.trunc(pendingMessageCount))
+  const remainingMessages = Math.max(0, requiredMessages - countedMessages)
+  return {
+    requiredMessages,
+    countedMessages,
+    remainingMessages,
+    percentage: Math.min(100, Math.round((countedMessages / requiredMessages) * 100)),
+  }
 }
 
 export function selectChapterBatch(
