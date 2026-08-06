@@ -6,6 +6,7 @@ var INPUT_PLACEHOLDER = "{{summaryPlusInput}}";
 var CONTEXT_PLACEHOLDER_EXAMPLE = "{{summaryPlusContext::N}}";
 var VALID_CONTEXT_PLACEHOLDER = /^\{\{summaryPlusContext::\s*\d+\s*\}\}$/;
 var GENERATION_PLACEHOLDER = /\{\{summaryPlusInput\}\}|\{\{summaryPlusContext::\s*(\d+)\s*\}\}/g;
+var IDENTITY_PLACEHOLDER = /\{\{\s*(user|char)\s*\}\}/gi;
 var LEVELS = ["chapter", "arc", "volume"];
 var BUILTIN_PROMPTS = {
   chapter: {
@@ -278,6 +279,9 @@ function renderGenerationUserPrompt(template, input, contextEntries) {
 
 `);
   });
+}
+function replaceIdentityMacros(text, values) {
+  return text.replace(IDENTITY_PLACEHOLDER, (_token, name) => name.toLowerCase() === "user" ? values.user : values.char);
 }
 function macroValue(state, level) {
   if (!state)
@@ -1300,13 +1304,32 @@ async function generateSummary(chatId, target, input, contextEntries, settings, 
   if (!hasValidContextPlaceholders(prompt.userPrompt)) {
     throw new ConfigurationError(`${prompt.name} has an invalid context placeholder. Use ${CONTEXT_PLACEHOLDER_EXAMPLE} with a non-negative integer.`);
   }
+  const [resolvedUser, resolvedChar] = await Promise.all([
+    spindle.macros.resolve("{{user}}", {
+      chatId,
+      userId,
+      commit: false
+    }),
+    spindle.macros.resolve("{{char}}", {
+      chatId,
+      userId,
+      commit: false
+    })
+  ]);
+  const identityMacros = {
+    user: resolvedUser.text,
+    char: resolvedChar.text
+  };
   const messages = [];
   if (prompt.systemPrompt.trim()) {
-    messages.push({ role: "system", content: prompt.systemPrompt });
+    messages.push({
+      role: "system",
+      content: replaceIdentityMacros(prompt.systemPrompt, identityMacros)
+    });
   }
   messages.push({
     role: "user",
-    content: renderGenerationUserPrompt(prompt.userPrompt, input, contextEntries)
+    content: replaceIdentityMacros(renderGenerationUserPrompt(prompt.userPrompt, input, contextEntries), identityMacros)
   });
   const request = {
     type: "quiet",

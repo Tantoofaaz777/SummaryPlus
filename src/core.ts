@@ -5,6 +5,7 @@ export const CONTEXT_PLACEHOLDER_EXAMPLE = '{{summaryPlusContext::N}}'
 
 const VALID_CONTEXT_PLACEHOLDER = /^\{\{summaryPlusContext::\s*\d+\s*\}\}$/
 const GENERATION_PLACEHOLDER = /\{\{summaryPlusInput\}\}|\{\{summaryPlusContext::\s*(\d+)\s*\}\}/g
+const IDENTITY_PLACEHOLDER = /\{\{\s*(user|char)\s*\}\}/gi
 
 export const LEVELS = ['chapter', 'arc', 'volume'] as const
 export type SummaryLevel = (typeof LEVELS)[number]
@@ -522,6 +523,15 @@ export function renderGenerationUserPrompt(
       .map((entry) => entry.content)
       .join('\n\n')
   })
+}
+
+export function replaceIdentityMacros(
+  text: string,
+  values: { user: string; char: string },
+): string {
+  return text.replace(IDENTITY_PLACEHOLDER, (_token, name: string) => (
+    name.toLowerCase() === 'user' ? values.user : values.char
+  ))
 }
 
 export function macroValue(state: ChatState | null, level: SummaryLevel): string {

@@ -33,6 +33,7 @@ import {
   orderedSourceItems,
   parseChatState,
   pendingMessages,
+  replaceIdentityMacros,
   renderGenerationUserPrompt,
   releaseSummaryPlusHiddenMessages,
   restoreDeletedChapterSlot,
@@ -744,13 +745,35 @@ async function generateSummary(
     )
   }
 
+  const [resolvedUser, resolvedChar] = await Promise.all([
+    spindle.macros.resolve('{{user}}', {
+      chatId,
+      userId,
+      commit: false,
+    }),
+    spindle.macros.resolve('{{char}}', {
+      chatId,
+      userId,
+      commit: false,
+    }),
+  ])
+  const identityMacros = {
+    user: resolvedUser.text,
+    char: resolvedChar.text,
+  }
   const messages: Array<{ role: 'system' | 'user'; content: string }> = []
   if (prompt.systemPrompt.trim()) {
-    messages.push({ role: 'system', content: prompt.systemPrompt })
+    messages.push({
+      role: 'system',
+      content: replaceIdentityMacros(prompt.systemPrompt, identityMacros),
+    })
   }
   messages.push({
     role: 'user',
-    content: renderGenerationUserPrompt(prompt.userPrompt, input, contextEntries),
+    content: replaceIdentityMacros(
+      renderGenerationUserPrompt(prompt.userPrompt, input, contextEntries),
+      identityMacros,
+    ),
   })
 
   const request: GenerationRequestDTO = {

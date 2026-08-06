@@ -138,9 +138,11 @@ The User prompt must contain the private placeholder:
 
 At generation time the placeholder receives:
 
-- raw persisted message contents for a Chapter,
+- persisted message contents for a Chapter,
 - active Chapter contents for an Arc,
 - active Arc contents for a Volume.
+
+Immediately before generation, SummaryPlus resolves only `{{user}}` and `{{char}}` through Lumiverse's macro context and substitutes those tokens throughout the System prompt, User prompt, source material, and optional previous context. Resolution is non-committing. Every other Lumiverse macro remains literal and is not executed.
 
 User prompts may also include an optional, parameterized context placeholder:
 

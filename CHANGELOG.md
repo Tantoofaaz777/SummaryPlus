@@ -24,3 +24,4 @@
 - Added always-visible manual controls to hide all summarized messages without delay or unhide all SummaryPlus-owned messages.
 - Disabled the manual hide action when no summarized source messages remain visible.
 - Added SceneMap-style expanded Lumiverse editors for editable System and User prompt fields.
+- Resolved only `{{user}}` and `{{char}}` through Lumiverse before summary generation.

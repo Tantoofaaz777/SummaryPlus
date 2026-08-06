@@ -19,6 +19,7 @@ import {
   orderBySavedIds,
   orderedSourceItems,
   pendingMessages,
+  replaceIdentityMacros,
   releaseSummaryPlusHiddenMessages,
   renderGenerationUserPrompt,
   restoreDeletedChapterSlot,
@@ -625,6 +626,20 @@ describe('generation context placeholder', () => {
     expect(hasValidContextPlaceholders('{{summaryPlusContext::-1}}')).toBe(false)
     expect(hasValidContextPlaceholders('{{summaryPlusContext::1.5}}')).toBe(false)
     expect(hasValidContextPlaceholders('{{summaryPlusContext::3')).toBe(false)
+  })
+})
+
+describe('generation identity macros', () => {
+  test('resolves only user and char without recursively evaluating inserted values', () => {
+    expect(replaceIdentityMacros(
+      'Hi {{user}} / {{ CHAR }}. Keep {{time}}, {{summaryPlusInput}}, and {{getvar::x}}.',
+      {
+        user: 'Ava $&',
+        char: 'Addison {{user}}',
+      },
+    )).toBe(
+      'Hi Ava $& / Addison {{user}}. Keep {{time}}, {{summaryPlusInput}}, and {{getvar::x}}.',
+    )
   })
 })
 
