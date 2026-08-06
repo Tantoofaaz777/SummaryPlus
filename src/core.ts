@@ -1049,11 +1049,9 @@ export function deleteActiveEntry(
   }
 }
 
-export function restoreDeletedChapterSlot(
+function deletedChapterSlotForSources(
   state: ChatState,
   sourceIds: string[],
-  content: string,
-  restoredAt: string,
 ): SummaryEntry | null {
   const incomingIds = new Set(sourceIds)
   const deletedChapters = state.entries
@@ -1071,7 +1069,24 @@ export function restoreDeletedChapterSlot(
   const overlapping = deletedChapters.find((entry) => (
     entry.sourceIds.some((id) => incomingIds.has(id))
   ))
-  const slot = exact ?? overlapping
+  return exact ?? overlapping ?? null
+}
+
+export function chapterOrderForSources(
+  state: ChatState,
+  sourceIds: string[],
+): number {
+  return deletedChapterSlotForSources(state, sourceIds)?.orderStart
+    ?? state.nextChapterOrder
+}
+
+export function restoreDeletedChapterSlot(
+  state: ChatState,
+  sourceIds: string[],
+  content: string,
+  restoredAt: string,
+): SummaryEntry | null {
+  const slot = deletedChapterSlotForSources(state, sourceIds)
   if (!slot) return null
 
   slot.content = content

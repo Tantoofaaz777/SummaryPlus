@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import {
   activeEntries,
+  chapterOrderForSources,
   chaptersReadyForTrimming,
   contextEntriesBefore,
   createChatState,
@@ -733,6 +734,22 @@ describe('restorative deletion', () => {
       sourceIds: ['m1', 'm2'],
     })
     expect(restored?.deletedAt).toBeUndefined()
+  })
+
+  test('reports the reusable Chapter number before regenerating a deleted slot', () => {
+    const state = createChatState(true)
+    state.nextChapterOrder = 3
+    state.processedMessageIds = ['m1', 'm2', 'm3', 'm4']
+    state.entries = [
+      { ...entry('c1', 'chapter', 1), sourceIds: ['m1', 'm2'] },
+      { ...entry('c2', 'chapter', 2), sourceIds: ['m3', 'm4'] },
+    ]
+
+    expect(deleteActiveEntry(state, 'c2', '2026-02-01T00:00:00.000Z')).not.toBeNull()
+    expect(deleteActiveEntry(state, 'c1', '2026-02-01T00:00:01.000Z')).not.toBeNull()
+    expect(chapterOrderForSources(state, ['m1', 'm2'])).toBe(1)
+    expect(chapterOrderForSources(state, ['m3', 'm4'])).toBe(2)
+    expect(chapterOrderForSources(state, ['m5', 'm6'])).toBe(3)
   })
 
   test('deleting an Arc restores its source Chapters and removes the Arc', () => {

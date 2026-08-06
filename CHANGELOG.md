@@ -25,3 +25,4 @@
 - Disabled the manual hide action when no summarized source messages remain visible.
 - Added SceneMap-style expanded Lumiverse editors for editable System and User prompt fields.
 - Resolved only `{{user}}` and `{{char}}` through Lumiverse before summary generation.
+- Fixed generation progress to show the deleted Chapter slot being reused instead of the next new number.

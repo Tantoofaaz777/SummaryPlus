@@ -623,12 +623,18 @@ function deleteActiveEntry(state, entryId, deletedAt) {
     restoredSourceCount
   };
 }
-function restoreDeletedChapterSlot(state, sourceIds, content, restoredAt) {
+function deletedChapterSlotForSources(state, sourceIds) {
   const incomingIds = new Set(sourceIds);
   const deletedChapters = state.entries.filter((entry) => entry.level === "chapter" && !entry.active && Boolean(entry.deletedAt) && !entry.promotedToId).sort((left, right) => left.orderStart - right.orderStart);
   const exact = deletedChapters.find((entry) => entry.sourceIds.length === incomingIds.size && entry.sourceIds.every((id) => incomingIds.has(id)));
   const overlapping = deletedChapters.find((entry) => entry.sourceIds.some((id) => incomingIds.has(id)));
-  const slot = exact ?? overlapping;
+  return exact ?? overlapping ?? null;
+}
+function chapterOrderForSources(state, sourceIds) {
+  return deletedChapterSlotForSources(state, sourceIds)?.orderStart ?? state.nextChapterOrder;
+}
+function restoreDeletedChapterSlot(state, sourceIds, content, restoredAt) {
+  const slot = deletedChapterSlotForSources(state, sourceIds);
   if (!slot)
     return null;
   slot.content = content;
@@ -1433,6 +1439,8 @@ async function createChapter(chatId, state, settings, signal, userId) {
   const batch = selectChapterBatch(messages, state, settings);
   if (!batch)
     return "none";
+  const sourceIds = batch.map((message) => String(message.id));
+  const chapterOrder = chapterOrderForSources(state, sourceIds);
   const sourceMessageNumbers = batch.map((message) => message.indexInChat).filter((value) => typeof value === "number" && Number.isInteger(value) && value >= 0).map((value) => value + 1);
   if (sourceMessageNumbers.length !== batch.length) {
     throw new Error("Lumiverse did not provide message positions for the Chapter source batch.");
@@ -1444,9 +1452,9 @@ async function createChapter(chatId, state, settings, signal, userId) {
     content = await generateSummary(chatId, {
       action: "create",
       level: "chapter",
-      orderStart: state.nextChapterOrder,
-      orderEnd: state.nextChapterOrder
-    }, await chapterSourceText(chatId, batch, settings, signal, userId), contextEntriesBefore(state, state.nextChapterOrder), settings, signal, userId);
+      orderStart: chapterOrder,
+      orderEnd: chapterOrder
+    }, await chapterSourceText(chatId, batch, settings, signal, userId), contextEntriesBefore(state, chapterOrder), settings, signal, userId);
   } catch (error) {
     if (isAbort(error))
       throw error;
@@ -1463,7 +1471,6 @@ async function createChapter(chatId, state, settings, signal, userId) {
     return "stale";
   }
   const createdAt = now();
-  const sourceIds = batch.map((message) => String(message.id));
   currentState.processedMessageIds = [
     ...new Set([
       ...currentState.processedMessageIds,

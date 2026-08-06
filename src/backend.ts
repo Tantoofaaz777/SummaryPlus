@@ -13,6 +13,7 @@ import {
   SETTINGS_PATH,
   STATE_KEY,
   allPrompts,
+  chapterOrderForSources,
   chaptersReadyForTrimming,
   contextEntriesBefore,
   createChatState,
@@ -900,6 +901,8 @@ async function createChapter(
   ensureEntryDisplayMetadata(state, messages)
   const batch = selectChapterBatch(messages, state, settings)
   if (!batch) return 'none'
+  const sourceIds = batch.map((message) => String(message.id))
+  const chapterOrder = chapterOrderForSources(state, sourceIds)
   const sourceMessageNumbers = batch
     .map((message) => message.indexInChat)
     .filter((value): value is number => (
@@ -919,11 +922,11 @@ async function createChapter(
       {
         action: 'create',
         level: 'chapter',
-        orderStart: state.nextChapterOrder,
-        orderEnd: state.nextChapterOrder,
+        orderStart: chapterOrder,
+        orderEnd: chapterOrder,
       },
       await chapterSourceText(chatId, batch, settings, signal, userId),
-      contextEntriesBefore(state, state.nextChapterOrder),
+      contextEntriesBefore(state, chapterOrder),
       settings,
       signal,
       userId,
@@ -950,7 +953,6 @@ async function createChapter(
   }
 
   const createdAt = now()
-  const sourceIds = batch.map((message) => String(message.id))
   currentState.processedMessageIds = [
     ...new Set([
       ...currentState.processedMessageIds,
